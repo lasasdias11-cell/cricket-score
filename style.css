@@ -18,6 +18,19 @@
   --radius: 20px;
 }
 
+#loginPage.active {
+  display: grid;
+}
+
+#appPage.active {
+  display: block;
+}
+
+#loginPage:not(.active),
+#appPage:not(.active) {
+  display: none;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
