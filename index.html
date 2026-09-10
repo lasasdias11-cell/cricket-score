@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+  >
+
+  <meta
+    name="description"
+    content="Weekly cricket scoring app for White Tigers and Black Panthers"
+  >
+
+  <meta name="theme-color" content="#07111f">
+
+  <title>Thursday Cricket</title>
+
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Chart.js -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"
+    defer>
+  </script>
+
+  <script type="module" src="app.js"></script>
+</head>
+
+<body>
+
+  <div class="background">
+    <div class="orb orb-one"></div>
+    <div class="orb orb-two"></div>
+    <div class="orb orb-three"></div>
+  </div>
+
+  <!-- LOGIN -->
+
+  <main id="loginPage" class="page active">
+
+    <section class="glass login-card">
+
+      <div class="brand">
+        <div class="brand-ball">🏏</div>
+
+        <div>
+          <h1>Thursday Cricket</h1>
+          <p>Six friends. One match. Every week.</p>
+        </div>
+      </div>
+
+      <form id="loginForm">
+
+        <label for="playerId">Player ID</label>
+
+        <select id="playerId" required>
+          <option value="">Select player</option>
+
+          <optgroup label="White Tigers">
+            <option value="Dilusha">Dilusha</option>
+            <option value="Isala">Isala</option>
+            <option value="Anuk">Anuk</option>
+          </optgroup>
+
+          <optgroup label="Black Panthers">
+            <option value="Jevon">Jevon</option>
+            <option value="Lasas">Lasas</option>
+            <option value="Shenal">Shenal</option>
+          </optgroup>
+        </select>
+
+        <label for="teamCode">Team Secret Code</label>
+
+        <div class="password-box">
+          <input
+            id="teamCode"
+            type="password"
+            placeholder="Enter team code"
+            autocomplete="current-password"
+            required
+          >
+
+          <button
+            type="button"
+            id="togglePassword"
+            class="icon-button"
+            aria-label="Show password">
+            👁
+          </button>
+        </div>
+
+        <button class="primary-button full" type="submit">
+          Enter Match Centre
+        </button>
+
+        <p id="loginMessage" class="message"></p>
+
+      </form>
+
+      <div class="login-help">
+        <strong>Teams</strong>
+
+        <div class="team-mini">
+          <span class="team-dot white-dot"></span>
+          White Tigers
+        </div>
+
+        <div class="team-mini">
+          <span class="team-dot black-dot"></span>
+          Black Panthers
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+
+  <!-- APP -->
+
+  <main id="appPage" class="page">
+
+    <header class="topbar glass">
+
+      <div class="brand-small">
+        <span>🏏</span>
+
+        <div>
+          <strong>Thursday Cricket</strong>
+          <small id="currentUser"></small>
+        </div>
+      </div>
+
+      <button id="logoutBtn" class="glass-button">
+        Logout
+      </button>
+
+    </header>
+
+
+    <nav class="bottom-nav glass">
+
+      <button class="nav-button active" data-page="dashboard">
+        <span>🏏</span>
+        <small>Score</small>
+      </button>
+
+      <button class="nav-button" data-page="matches">
+        <span>📊</span>
+        <small>Matches</small>
+      </button>
+
+      <button class="nav-button" data-page="setup">
+        <span>⚙️</span>
+        <small>Setup</small>
+      </button>
+
+      <button class="nav-button" data-page="settings">
+        <span>👤</span>
+        <small>Profile</small>
+      </button>
+
+    </nav>
+
+
+    <!-- DASHBOARD -->
+
+    <section id="dashboard" class="content-section active">
+
+      <div class="page-heading">
+        <div>
+          <span class="eyebrow">LIVE MATCH</span>
+          <h2 id="matchTitle">No active match</h2>
+        </div>
+
+        <span id="matchStatus" class="status-pill">
+          Waiting
+        </span>
+      </div>
+
+
+      <div id="scoreCards" class="score-grid">
+
+        <article class="score-card glass team-white">
+
+          <div class="score-team">
+            <span class="team-icon">🐯</span>
+
+            <div>
+              <strong>White Tigers</strong>
+              <small>Team 1</small>
+            </div>
+          </div>
+
+          <div class="big-score" id="whiteScore">
+            0/0
+          </div>
+
+          <div class="score-sub">
+            <span id="whiteOvers">0.0 overs</span>
+            <span id="whiteRuns">0 runs</span>
+          </div>
+
+        </article>
+
+
+        <article class="score-card glass team-black">
+
+          <div class="score-team">
+            <span class="team-icon">🐆</span>
+
+            <div>
+              <strong>Black Panthers</strong>
+              <small>Team 2</small>
+            </div>
+          </div>
+
+          <div class="big-score" id="blackScore">
+            0/0
+          </div>
+
+          <div class="score-sub">
+            <span id="blackOvers">0.0 overs</span>
+            <span id="blackRuns">0 runs</span>
+          </div>
+
+        </article>
+
+      </div>
+
+
+      <div id="emptyMatch" class="glass empty-state">
+
+        <div class="empty-icon">🏏</div>
+
+        <h3>No match running</h3>
+
+        <p>
+          Create a match from the Setup tab to start scoring.
+        </p>
+
+        <button
+          class="primary-button"
+          data-goto="setup">
+          Create Match
+        </button>
+
+      </div>
+
+
+      <div id="scoringPanel" class="glass scoring-panel hidden">
+
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">SCORING</span>
+            <h3 id="scoringTeamTitle">White Tigers</h3>
+          </div>
+
+          <select id="scoringTeam">
+            <option value="white">White Tigers</option>
+            <option value="black">Black Panthers</option>
+          </select>
+        </div>
+
+
+        <!-- QUICK SCORING -->
+
+        <div id="quickScoring">
+
+          <div class="quick-score-inputs">
+
+            <div>
+              <label>Runs</label>
+              <input
+                id="quickRuns"
+                type="number"
+                min="0"
+                value="0">
+            </div>
+
+            <div>
+              <label>Wickets</label>
+              <input
+                id="quickWickets"
+                type="number"
+                min="0"
+                value="0">
+            </div>
+
+            <div>
+              <label>Overs</label>
+              <input
+                id="quickOvers"
+                type="number"
+                min="0"
+                step="0.1"
+                value="0">
+            </div>
+
+          </div>
+
+          <button
+            id="saveQuickScore"
+            class="primary-button full">
+            Update Team Score
+          </button>
+
+        </div>
+
+
+        <!-- DETAILED SCORING -->
+
+        <div id="detailedScoring" class="hidden">
+
+          <div class="player-score-list" id="playerScoreList"></div>
+
+          <button
+            id="saveDetailedScore"
+            class="primary-button full">
+            Save Player Scores
+          </button>
+
+        </div>
+
+
+        <div class="score-actions">
+
+          <button id="finishMatchBtn" class="danger-button">
+            Finish Match
+          </button>
+
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- MATCH HISTORY -->
+
+    <section id="matches" class="content-section">
+
+      <div class="page-heading">
+
+        <div>
+          <span class="eyebrow">HISTORY</span>
+          <h2>Match History</h2>
+        </div>
+
+      </div>
+
+      <div id="matchHistory" class="match-list">
+
+        <div class="glass empty-state">
+          <div class="empty-icon">📊</div>
+          <h3>No matches yet</h3>
+          <p>Your completed matches will appear here.</p>
+        </div>
+
+      </div>
+
+
+      <div id="analysisPanel" class="glass analysis-panel hidden">
+
+        <div class="page-heading">
+          <div>
+            <span class="eyebrow">ANALYSIS</span>
+            <h3 id="analysisTitle">Match Analysis</h3>
+          </div>
+        </div>
+
+        <div class="chart-container">
+          <canvas id="matchChart"></canvas>
+        </div>
+
+
+        <div class="awards">
+
+          <div class="award">
+            <span>🏆</span>
+            <div>
+              <small>Best Player</small>
+              <strong id="bestPlayer">—</strong>
+            </div>
+          </div>
+
+          <div class="award">
+            <span>⭐</span>
+            <div>
+              <small>Man of the Match</small>
+              <strong id="manOfMatch">—</strong>
+            </div>
+          </div>
+
+          <div class="award">
+            <span>👑</span>
+            <div>
+              <small>Player of the Series</small>
+              <strong id="seriesPlayer">—</strong>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- SETUP -->
+
+    <section id="setup" class="content-section">
+
+      <div class="page-heading">
+
+        <div>
+          <span class="eyebrow">MATCH CENTRE</span>
+          <h2>Match Setup</h2>
+        </div>
+
+      </div>
+
+
+      <form id="matchForm" class="glass form-card">
+
+        <label for="matchName">
+          Match Name
+        </label>
+
+        <input
+          id="matchName"
+          type="text"
+          maxlength="50"
+          placeholder="Thursday Cricket #01"
+          required
+        >
+
+
+        <label>
+          Scoring Type
+        </label>
+
+        <div class="radio-grid">
+
+          <label class="radio-card">
+
+            <input
+              type="radio"
+              name="scoringType"
+              value="quick"
+              checked
+            >
+
+            <span>
+              <strong>⚡ Quick Entry</strong>
+              <small>
+                Enter total runs, wickets and overs.
+              </small>
+            </span>
+
+          </label>
+
+
+          <label class="radio-card">
+
+            <input
+              type="radio"
+              name="scoringType"
+              value="detailed"
+            >
+
+            <span>
+              <strong>🎯 Detailed Entry</strong>
+              <small>
+                Track each player's score.
+              </small>
+            </span>
+
+          </label>
+
+        </div>
+
+
+        <button
+          class="primary-button full"
+          type="submit">
+          Create New Match
+        </button>
+
+        <p id="setupMessage" class="message"></p>
+
+      </form>
+
+
+      <div class="glass teams-card">
+
+        <span class="eyebrow">TEAMS</span>
+
+        <div class="roster">
+
+          <div>
+            <strong>🐯 White Tigers</strong>
+            <p>Dilusha · Isala · Anuk</p>
+          </div>
+
+          <div>
+            <strong>🐆 Black Panthers</strong>
+            <p>Jevon · Lasas · Shenal</p>
+          </div>
+
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- SETTINGS -->
+
+    <section id="settings" class="content-section">
+
+      <div class="page-heading">
+
+        <div>
+          <span class="eyebrow">ACCOUNT</span>
+          <h2>Profile & Team</h2>
+        </div>
+
+      </div>
+
+
+      <div class="glass profile-card">
+
+        <div class="avatar" id="profileAvatar">
+          L
+        </div>
+
+        <div>
+          <h3 id="profileName">Lasas</h3>
+          <p id="profileTeam">Black Panthers</p>
+        </div>
+
+      </div>
+
+
+      <form id="profileForm" class="glass form-card">
+
+        <label for="displayName">
+          Display Name
+        </label>
+
+        <input
+          id="displayName"
+          maxlength="30"
+          required
+        >
+
+        <button
+          class="primary-button full"
+          type="submit">
+          Save Display Name
+        </button>
+
+        <p id="profileMessage" class="message"></p>
+
+      </form>
+
+
+      <div class="glass voting-card">
+
+        <span class="eyebrow">TEAM SECURITY</span>
+
+        <h3>Vote to Change Team Code</h3>
+
+        <p>
+          Team members can propose a new secret code.
+          A proposal requires a majority of the team's players.
+        </p>
+
+
+        <input
+          id="newTeamCode"
+          type="password"
+          minlength="6"
+          maxlength="40"
+          placeholder="New team code"
+        >
+
+        <button
+          id="voteCodeBtn"
+          class="primary-button full">
+          Vote for New Code
+        </button>
+
+
+        <div id="voteStatus" class="vote-status"></div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+
+  <div id="toast" class="toast"></div>
+
+</body>
+  </html>
