@@ -34,12 +34,13 @@ import {
 */
 
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT.firebasestorage.app",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyCaA5DXo3JkWGqGdjFBMPnKj5PlwAbCT-Y",
+  authDomain: "thursday-cricket.firebaseapp.com",
+  projectId: "thursday-cricket",
+  storageBucket: "thursday-cricket.firebasestorage.app",
+  messagingSenderId: "752945537542",
+  appId: "1:752945537542:web:84be60617247fc045fd987",
+  measurementId: "G-SBLP9HHY5C"
 };
 
 
