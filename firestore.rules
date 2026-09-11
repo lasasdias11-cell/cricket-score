@@ -1,0 +1,75 @@
+rules_version = '2';
+
+service cloud.firestore {
+
+  match /databases/{database}/documents {
+
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+
+    /*
+     * User profiles
+     */
+
+    match /users/{userId} {
+
+      allow read, create, update:
+        if signedIn()
+        && request.auth.uid == userId;
+
+    }
+
+
+    /*
+     * Matches
+     *
+     * Any authenticated team member can
+     * read and update matches.
+     */
+
+    match /matches/{matchId} {
+
+      allow read:
+        if signedIn();
+
+      allow create:
+        if signedIn();
+
+      allow update:
+        if signedIn();
+
+      allow delete:
+        if false;
+
+    }
+
+
+    /*
+     * Active match pointer
+     */
+
+    match /app/{document} {
+
+      allow read, write:
+        if signedIn();
+
+    }
+
+
+    /*
+     * Team-code voting
+     */
+
+    match /teamCodeVotes/{teamId} {
+
+      allow read, write:
+        if signedIn();
+
+    }
+
+  }
+
+}
