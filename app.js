@@ -304,8 +304,7 @@ function handleLogin(name, code) {
   if (team.secretCode !== (code || '').trim()) return toast('Invalid secret code for ' + team.name + '.', 'error');
   state.user = { teamId: team.id, member: name, displayName: displayNameOf(team.id, name) };
   persistUser();
-  showMain();
-  showPanel('dashboard');
+  showSection('dashboard-section');
   renderAll();
   toast('Welcome, ' + state.user.displayName + '! 🏏', 'success');
 }
@@ -313,23 +312,19 @@ function logout() {
   state.user = null;
   state.activeMatchId = null;
   try { localStorage.removeItem(LS.user); } catch (e) {}
-  showLogin();
+  showSection('login-section');
 }
 
-/* ---------- 8. View / panel navigation ---------- */
-function showLogin() {
-  document.getElementById('view-login').classList.add('is-active');
-  document.getElementById('view-main').classList.remove('is-active');
-}
-function showMain() {
-  document.getElementById('view-login').classList.remove('is-active');
-  document.getElementById('view-main').classList.add('is-active');
-}
-function showPanel(name) {
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('is-active'));
-  const target = document.getElementById('panel-' + name);
-  if (target) target.classList.add('is-active');
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('is-active', b.dataset.view === name));
+/* ---------- 8. Section router ---------- */
+function showSection(sectionId) {
+  const sections = ['login-section', 'dashboard-section', 'match-setup-section', 'scoreboard-section', 'analysis-section', 'settings-section'];
+  sections.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', id !== sectionId);
+  });
+  const topbar = document.getElementById('topbar');
+  if (topbar) topbar.classList.toggle('hidden', sectionId === 'login-section');
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('is-active', b.dataset.section === sectionId));
 }
 function renderHeader() {
   const u = state.user;
@@ -564,7 +559,7 @@ function startMatch() {
     if (!state.matches.some(x => x.id === id)) state.matches.push(match);
     state.activeMatchId = id;
     nameEl.value = '';
-    showPanel('match');
+    showSection('scoreboard-section');
     renderMatchPanel();
     toast('Match "' + name + '" started — good luck! 🏏', 'success');
   });
@@ -1060,12 +1055,12 @@ function globalClick(e) {
   const el = e.target.closest('[data-action]');
   if (!el) return;
   switch (el.dataset.action) {
-    case 'open-match': state.activeMatchId = el.dataset.id; renderLiveArea(); showPanel('match'); break;
+    case 'open-match': state.activeMatchId = el.dataset.id; renderLiveArea(); showSection('scoreboard-section'); break;
     case 'end-match': endMatch(el.dataset.id); break;
     case 'delete-match': deleteMatch(el.dataset.id); break;
     case 'add-player': addPlayer(el.dataset.team); break;
     case 'vote-yes': voteYes(); break;
-    case 'go-match': showPanel('match'); break;
+    case 'go-match': showSection('match-setup-section'); break;
     case 'ball': applyBall(el.dataset.team, +el.dataset.runs); break;
     case 'wicket': applyWicket(el.dataset.team); break;
     case 'undo': undoBall(el.dataset.team); break;
@@ -1114,7 +1109,7 @@ function init() {
   document.getElementById('logout-btn').addEventListener('click', logout);
   document.getElementById('main-nav').addEventListener('click', e => {
     const b = e.target.closest('.nav-btn');
-    if (b) showPanel(b.dataset.view);
+    if (b) showSection(b.dataset.section);
   });
   document.getElementById('chart-select').addEventListener('change', renderCharts);
   document.getElementById('print-btn').addEventListener('click', buildPrintSummary);
@@ -1133,11 +1128,10 @@ function init() {
   if (saved) {
     state.user = saved;
     state.user.displayName = displayNameOf(saved.teamId, saved.member);
-    showMain();
-    showPanel('dashboard');
+    showSection('dashboard-section');
     renderAll();
   } else {
-    showLogin();
+    showSection('login-section');
   }
 }
 

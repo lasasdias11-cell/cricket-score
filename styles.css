@@ -92,8 +92,7 @@ code {
 /* ---------- Layout ---------- */
 .app { max-width: 1080px; margin: 0 auto; padding: 0 16px 48px; }
 
-.view { display: none; }
-.view.is-active { display: block; animation: fadeIn 0.35s ease; }
+.hidden { display: none !important; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* ---------- Glassmorphism ---------- */
@@ -109,7 +108,7 @@ code {
 .card-title { font-size: 1.05rem; margin-bottom: 12px; }
 
 /* ---------- Login ---------- */
-#view-login.is-active { display: grid; place-items: center; min-height: 100vh; padding: 20px; }
+#login-section { display: grid; place-items: center; min-height: 100vh; padding: 20px; }
 .login-card { width: 100%; max-width: 400px; padding: 32px 26px; text-align: center; }
 .brand { margin-bottom: 24px; }
 .logo {
@@ -168,8 +167,6 @@ code {
 .sync-status.local { background: rgba(148,163,184,0.15); color: var(--muted); }
 
 .content { min-height: 60vh; }
-.panel { display: none; }
-.panel.is-active { display: block; animation: fadeIn 0.3s ease; }
 .panel-title { font-size: 1.5rem; margin: 6px 0 18px; }
 
 /* ---------- Grid ---------- */

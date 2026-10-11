@@ -22,7 +22,7 @@
   <div id="app" class="app">
 
     <!-- ============ LOGIN ============ -->
-    <section id="view-login" class="view is-active">
+    <section id="login-section" class="section">
       <div class="glass card login-card">
         <div class="brand">
           <div class="logo">🏏</div>
@@ -45,28 +45,27 @@
       </div>
     </section>
 
-    <!-- ============ MAIN APP ============ -->
-    <section id="view-main" class="view">
-      <header class="topbar glass">
-        <div class="brand-mini">🏏 Thursday Cricket</div>
-        <nav class="nav" id="main-nav">
-          <button data-view="dashboard" class="nav-btn is-active">Home</button>
-          <button data-view="match" class="nav-btn">Match</button>
-          <button data-view="history" class="nav-btn">History</button>
-          <button data-view="analysis" class="nav-btn">Analysis</button>
-          <button data-view="team" class="nav-btn">Team</button>
-        </nav>
-        <div class="topbar-right">
-          <span id="sync-status" class="sync-status local" title="Sync mode"></span>
-          <span id="whoami" class="whoami"></span>
-          <button id="logout-btn" class="btn btn-ghost btn-sm" type="button">Logout</button>
-        </div>
-      </header>
+    <!-- ============ TOP BAR ============ -->
+    <header id="topbar" class="topbar glass hidden">
+      <div class="brand-mini">🏏 Thursday Cricket</div>
+      <nav class="nav" id="main-nav">
+        <button data-section="dashboard-section" class="nav-btn is-active">Home</button>
+        <button data-section="match-setup-section" class="nav-btn">Start New Match</button>
+        <button data-section="scoreboard-section" class="nav-btn">Live Scoreboard</button>
+        <button data-section="analysis-section" class="nav-btn">Match Analysis</button>
+        <button data-section="settings-section" class="nav-btn">Settings &amp; Voting</button>
+      </nav>
+      <div class="topbar-right">
+        <span id="sync-status" class="sync-status local" title="Sync mode"></span>
+        <span id="whoami" class="whoami"></span>
+        <button id="logout-btn" class="btn btn-ghost btn-sm" type="button">Logout</button>
+      </div>
+    </header>
 
-      <main class="content">
+    <main class="content">
 
         <!-- Dashboard -->
-        <div id="panel-dashboard" class="panel is-active">
+        <div id="dashboard-section" class="section hidden">
           <h2 class="panel-title">Welcome back, <span id="dash-name" class="accent"></span> 👋</h2>
           <div class="grid grid-2">
             <div class="glass card" id="dash-team-card"></div>
@@ -75,21 +74,20 @@
           <div class="glass card" id="dash-recent"></div>
         </div>
 
-        <!-- Match setup + live scoring -->
-        <div id="panel-match" class="panel">
-          <h2 class="panel-title">Match Centre</h2>
+        <!-- Match setup -->
+        <div id="match-setup-section" class="section hidden">
+          <h2 class="panel-title">Start a Match</h2>
           <div class="glass card" id="match-setup"></div>
+        </div>
+
+        <!-- Live scoreboard -->
+        <div id="scoreboard-section" class="section hidden">
+          <h2 class="panel-title">Live Scoreboard</h2>
           <div class="glass card" id="live-match"></div>
         </div>
 
-        <!-- History -->
-        <div id="panel-history" class="panel">
-          <h2 class="panel-title">Match History</h2>
-          <div id="history-list"></div>
-        </div>
-
-        <!-- Analysis -->
-        <div id="panel-analysis" class="panel">
+        <!-- Analysis (history + charts + awards + print) -->
+        <div id="analysis-section" class="section hidden">
           <h2 class="panel-title">Analysis &amp; Awards</h2>
           <div class="field-inline">
             <label class="field">
@@ -114,11 +112,15 @@
             <p class="hint" style="margin-top:0">Generate a clean, print-ready report of every match, scorecard and award.</p>
             <button id="print-btn" class="btn btn-primary btn-block mt" type="button">🖨 Print Match Summary</button>
           </div>
+          <div class="glass card">
+            <h3 class="card-title">Match History</h3>
+            <div id="history-list"></div>
+          </div>
         </div>
 
-        <!-- Team / profile / secret-code vote -->
-        <div id="panel-team" class="panel">
-          <h2 class="panel-title">Team &amp; Profile</h2>
+        <!-- Settings & voting -->
+        <div id="settings-section" class="section hidden">
+          <h2 class="panel-title">Settings &amp; Voting</h2>
           <div class="grid grid-2">
             <div class="glass card" id="team-profile"></div>
             <div class="glass card" id="team-vote"></div>
@@ -126,7 +128,6 @@
         </div>
 
       </main>
-    </section>
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
