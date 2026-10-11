@@ -85,6 +85,10 @@ const state = {
 let uiMode = 'quick';       // currently selected scoring mode in the setup form
 let chartTeam = null;       // Chart.js instances (kept for destroy/update)
 let chartPlayers = null;
+let localEditUntil = 0;     // suppress live-area rebuild while scoring (avoids dropped taps)
+const undoStack = {};       // { matchId: { teamId: [snapshot, ...] } }
+function markLocalEdit() { localEditUntil = Date.now() + 900; }
+function isRecentLocalEdit() { return Date.now() < localEditUntil; }
 
 /* ---------- 4. Small utilities ---------- */
 function uid() {
@@ -123,6 +127,13 @@ function playerLabel(p, teamId) {
 }
 function majority(teamId) {
   return Math.floor((getTeam(teamId).members || []).length / 2) + 1;
+}
+function fmtOvers(balls) { return Math.floor((balls || 0) / 6) + '.' + ((balls || 0) % 6); }
+function overDots(balls) {
+  const b = (balls || 0) % 6;
+  let h = '';
+  for (let i = 0; i < 6; i++) h += '<span class="dot' + (i < b ? ' on' : '') + '"></span>';
+  return h;
 }
 
 /* ---------- 5. Data layer (Firestore ⇄ localStorage) ---------- */
@@ -238,6 +249,16 @@ function applyTeams(data) {
 }
 function applyMatches(data) {
   state.matches = (data || []).slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  if (isRecentLocalEdit()) {
+    // A local scoring tap already updated the UI in place; skip rebuilding the
+    // live area from our own Firestore echo so rapid taps aren't dropped.
+    renderHeader();
+    renderDashboard();
+    renderHistory();
+    renderAnalysis();
+    renderTeam();
+    return;
+  }
   renderAll();
 }
 function applyVotes(data) {
@@ -457,26 +478,48 @@ function teamCardHTML(tid, t, meta, mode, isYou) {
         '<label class="field"><span>Wickets</span><input type="number" min="0" inputmode="numeric" value="' + (t.wickets || 0) + '" data-score data-team="' + tid + '" data-field="wickets"' + (isYou ? '' : ' disabled') + ' /></label>' +
       '</div>';
   } else {
+    const striker = t.striker || 0;
     const rows = (t.players || []).map((p, i) => {
-      const isSelf = isYou && state.user && p.member === state.user.member;
-      const nameInput = p.member
-        ? '<div class="p-name">' + esc(playerLabel(p, tid)) + (isSelf ? ' <span class="badge badge-you">you</span>' : '') + '</div>'
-        : '<input type="text" value="' + esc(p.name) + '" data-rename data-team="' + tid + '" data-idx="' + i + '" class="p-name-input" placeholder="Player name" />';
+      const isStriker = i === striker;
+      const label = playerLabel(p, tid);
+      const clickAttr = isYou ? ' data-action="set-striker" data-team="' + tid + '" data-idx="' + i + '"' : '';
       return '' +
-        '<div class="player-row">' + nameInput +
-          '<div class="p-inputs">' +
-            '<label>Runs<input type="number" min="0" inputmode="numeric" value="' + (p.runs || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="runs"' + (isYou ? '' : ' disabled') + ' /></label>' +
-            '<label>Balls<input type="number" min="0" inputmode="numeric" value="' + (p.balls || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="balls"' + (isYou ? '' : ' disabled') + ' /></label>' +
-            '<label>4s<input type="number" min="0" inputmode="numeric" value="' + (p.fours || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="fours"' + (isYou ? '' : ' disabled') + ' /></label>' +
-            '<label>6s<input type="number" min="0" inputmode="numeric" value="' + (p.sixes || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="sixes"' + (isYou ? '' : ' disabled') + ' /></label>' +
+        '<div class="prow' + (isStriker ? ' is-striker' : '') + (p.out ? ' is-out' : '') + '"' + clickAttr + '>' +
+          '<div class="p-name">' + esc(label) +
+            (isStriker ? ' <span class="badge badge-live">batting</span>' : '') +
+            (p.out ? ' <span class="badge badge-lost">out</span>' : '') +
           '</div>' +
-          '<label class="p-out' + (p.out ? ' is-out' : '') + '"><input type="checkbox" data-out data-team="' + tid + '" data-idx="' + i + '"' + (p.out ? ' checked' : '') + (isYou ? '' : ' disabled') + ' /> Out (dismissed)</label>' +
+          '<div class="p-stat">' + (p.runs || 0) + ' runs · ' + (p.balls || 0) + ' balls' + (p.fours ? ' · ' + p.fours + '×4' : '') + (p.sixes ? ' · ' + p.sixes + '×6' : '') + '</div>' +
         '</div>';
     }).join('');
+    const strikerName = (t.players[striker] && playerLabel(t.players[striker], tid)) || '—';
+    const runpad = isYou
+      ? '<div class="runpad">' +
+          [0, 1, 2, 3, 4, 6].map(r => '<button type="button" class="run-btn" data-action="ball" data-team="' + tid + '" data-runs="' + r + '">' + r + '</button>').join('') +
+          '<button type="button" class="run-btn wicket" data-action="wicket" data-team="' + tid + '">W</button>' +
+          '<button type="button" class="run-btn undo" data-action="undo" data-team="' + tid + '">↩</button>' +
+        '</div>'
+      : '';
+    const bowling = '<div class="card-title mt">🎯 Bowling</div>' +
+      '<div class="bowlers">' + (t.bowlers || []).map((b, i) =>
+        '<div class="bowl-row">' +
+          '<div class="b-name">' + esc(b.member ? displayNameOf(tid, b.member) : b.name) + '</div>' +
+          '<div class="b-overs">' + fmtOvers(b.balls || 0) + ' ov</div>' +
+          '<div class="b-inputs">' +
+            '<label>Balls<input type="number" min="0" inputmode="numeric" value="' + (b.balls || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="balls"' + (isYou ? '' : ' disabled') + ' /></label>' +
+            '<label>Runs<input type="number" min="0" inputmode="numeric" value="' + (b.runs || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="runs"' + (isYou ? '' : ' disabled') + ' /></label>' +
+            '<label>Wkts<input type="number" min="0" inputmode="numeric" value="' + (b.wickets || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="wickets"' + (isYou ? '' : ' disabled') + ' /></label>' +
+          '</div>' +
+        '</div>').join('') + '</div>';
     body =
-      '<div class="scoreline mt"><span class="score-big" id="totals-' + tid + '">' + (t.runs || 0) + '</span><span class="score-meta">/ ' + (t.wickets || 0) + ' wickets</span></div>' +
-      '<div class="mt">' + rows + '</div>' +
-      (isYou ? '<button class="btn btn-sm btn-ghost mt" data-action="add-player" data-team="' + tid + '">＋ Add Player</button>' : '');
+      '<div class="scoreline mt"><span class="score-big" id="totals-' + tid + '">' + (t.runs || 0) + '</span>' +
+      '<span class="score-meta">/ <span id="wkts-' + tid + '">' + (t.wickets || 0) + '</span> · <span id="overs-' + tid + '">' + fmtOvers(totalBalls(t)) + '</span> ov</span></div>' +
+      '<div class="batting-line" id="batting-' + tid + '">Batting: <strong>' + esc(strikerName) + '</strong></div>' +
+      '<div class="over-dots" id="dots-' + tid + '">' + overDots(totalBalls(t)) + '</div>' +
+      runpad +
+      '<div class="batters" id="batters-' + tid + '">' + rows + '</div>' +
+      bowling +
+      (isYou ? '<button type="button" class="btn btn-sm btn-ghost mt" data-action="add-player" data-team="' + tid + '">＋ Add Player</button>' : '');
   }
   return '' +
     '<div class="glass card team-card" style="border-top-color:' + color + '">' +
@@ -506,8 +549,13 @@ function startMatch() {
   Object.values(state.teams).forEach(t => {
     teams[t.id] = {
       runs: 0, wickets: 0,
+      striker: uiMode === 'detailed' ? 0 : undefined,
+      bowler: uiMode === 'detailed' ? 0 : undefined,
       players: uiMode === 'detailed'
         ? t.members.map(m => ({ key: m, name: displayNameOf(t.id, m), member: m, runs: 0, balls: 0, fours: 0, sixes: 0, out: false }))
+        : [],
+      bowlers: uiMode === 'detailed'
+        ? t.members.map(m => ({ key: m, name: displayNameOf(t.id, m), member: m, balls: 0, runs: 0, wickets: 0 }))
         : []
     };
   });
@@ -547,7 +595,155 @@ async function addPlayer(teamId) {
   renderLiveArea();
 }
 
-/* ---------- 11. Scoring input handlers ---------- */
+/* ---------- 11. Ball-by-ball scoring (Detailed Mode) ---------- */
+function totalBalls(t) { return (t.players || []).reduce((s, p) => s + (+p.balls || 0), 0); }
+function nextAvailable(t, from) {
+  const n = (t.players || []).length;
+  if (!n) return 0;
+  for (let k = 0; k < n; k++) {
+    const i = (from + k) % n;
+    if (!t.players[i].out) return i;
+  }
+  return from % n;
+}
+function normalizeStriker(t) {
+  const n = (t.players || []).length;
+  if (!n) return 0;
+  let s = (t.striker || 0) % n;
+  if (t.players[s].out) s = nextAvailable(t, s);
+  t.striker = s;
+  return s;
+}
+function snapshotTeam(t) {
+  return {
+    runs: t.runs, wickets: t.wickets, striker: t.striker || 0,
+    players: (t.players || []).map(p => ({ runs: p.runs || 0, balls: p.balls || 0, fours: p.fours || 0, sixes: p.sixes || 0, out: !!p.out }))
+  };
+}
+function pushUndo(matchId, teamId, t) {
+  const m = undoStack[matchId] || (undoStack[matchId] = {});
+  const stack = m[teamId] || (m[teamId] = []);
+  stack.push(snapshotTeam(t));
+  if (stack.length > 20) stack.shift();
+}
+function applyBall(teamId, runs) {
+  const m = getActiveMatch(); if (!m) return;
+  if (m.mode !== 'detailed') return;
+  const t = m.teams[teamId]; if (!t) return;
+  const idx = normalizeStriker(t);
+  const p = t.players[idx];
+  if (!p) return toast('Add a batter first.', 'error');
+  if (p.out) return toast(esc(p.name) + ' is out — tap another batter.', 'error');
+  pushUndo(m.id, teamId, t);
+  p.runs = (p.runs || 0) + runs;
+  p.balls = (p.balls || 0) + 1;
+  if (runs === 4) p.fours = (p.fours || 0) + 1;
+  if (runs === 6) p.sixes = (p.sixes || 0) + 1;
+  recomputeTeam(t);
+  m.updatedAt = Date.now();
+  markLocalEdit();
+  db.saveMatch(m);
+  refreshTeamCard(teamId);
+}
+function applyWicket(teamId) {
+  const m = getActiveMatch(); if (!m) return;
+  if (m.mode !== 'detailed') return;
+  const t = m.teams[teamId]; if (!t) return;
+  const idx = normalizeStriker(t);
+  const p = t.players[idx];
+  if (!p) return;
+  if (p.out) return toast(esc(p.name) + ' is already out.', 'error');
+  pushUndo(m.id, teamId, t);
+  p.out = true;
+  p.balls = (p.balls || 0) + 1;
+  t.striker = nextAvailable(t, (idx + 1) % (t.players.length || 1));
+  recomputeTeam(t);
+  m.updatedAt = Date.now();
+  markLocalEdit();
+  db.saveMatch(m);
+  refreshTeamCard(teamId);
+}
+function setStriker(teamId, idx) {
+  const m = getActiveMatch(); if (!m) return;
+  if (!state.user || state.user.teamId !== teamId) return;
+  const t = m.teams[teamId]; if (!t) return;
+  if (!t.players[idx]) return;
+  if (t.players[idx].out) return toast('That batter is out.', 'error');
+  t.striker = idx;
+  m.updatedAt = Date.now();
+  markLocalEdit();
+  db.saveMatch(m);
+  refreshTeamCard(teamId);
+}
+function undoBall(teamId) {
+  const m = getActiveMatch(); if (!m) return;
+  const stack = undoStack[m.id] && undoStack[m.id][teamId];
+  if (!stack || !stack.length) return toast('Nothing to undo.', 'error');
+  const snap = stack.pop();
+  const t = m.teams[teamId];
+  t.runs = snap.runs; t.wickets = snap.wickets; t.striker = snap.striker;
+  (t.players || []).forEach((p, i) => {
+    const s = snap.players[i];
+    if (s) { p.runs = s.runs; p.balls = s.balls; p.fours = s.fours; p.sixes = s.sixes; p.out = s.out; }
+  });
+  m.updatedAt = Date.now();
+  markLocalEdit();
+  db.saveMatch(m);
+  refreshTeamCard(teamId);
+}
+function refreshTeamCard(teamId) {
+  const m = getActiveMatch(); if (!m) return;
+  const t = m.teams[teamId]; if (!t) return;
+  const striker = t.striker || 0;
+  const totals = document.getElementById('totals-' + teamId);
+  if (totals) totals.textContent = t.runs || 0;
+  const wkts = document.getElementById('wkts-' + teamId);
+  if (wkts) wkts.textContent = t.wickets || 0;
+  const balls = document.getElementById('overs-' + teamId);
+  if (balls) balls.textContent = fmtOvers(totalBalls(t));
+  const dots = document.getElementById('dots-' + teamId);
+  if (dots) dots.innerHTML = overDots(totalBalls(t));
+  const batting = document.getElementById('batting-' + teamId);
+  if (batting) {
+    const p = t.players[striker];
+    batting.innerHTML = 'Batting: <strong>' + esc(p ? playerLabel(p, teamId) : '—') + '</strong>';
+  }
+  const batters = document.getElementById('batters-' + teamId);
+  if (batters) {
+    Array.prototype.forEach.call(batters.querySelectorAll('.prow'), (row, i) => {
+      const p = t.players[i];
+      if (!p) return;
+      row.classList.toggle('is-striker', i === striker);
+      row.classList.toggle('is-out', !!p.out);
+      const stat = row.querySelector('.p-stat');
+      if (stat) stat.textContent = (p.runs || 0) + ' runs · ' + (p.balls || 0) + ' balls' + (p.fours ? ' · ' + p.fours + '×4' : '') + (p.sixes ? ' · ' + p.sixes + '×6' : '');
+      const name = row.querySelector('.p-name');
+      if (name) name.innerHTML = esc(playerLabel(p, teamId)) +
+        (i === striker ? ' <span class="badge badge-live">batting</span>' : '') +
+        (p.out ? ' <span class="badge badge-lost">out</span>' : '');
+    });
+  }
+}
+
+function updateBowlerLocal(el) {
+  const m = getActiveMatch(); if (!m) return;
+  const t = m.teams[el.dataset.team]; if (!t) return;
+  const b = (t.bowlers || [])[+el.dataset.idx]; if (!b) return;
+  b[el.dataset.field] = Math.max(0, parseInt(el.value, 10) || 0);
+  const row = el.closest('.bowl-row');
+  const ov = row && row.querySelector('.b-overs');
+  if (ov) ov.textContent = fmtOvers(b.balls || 0) + ' ov';
+}
+async function saveBowlerField(el) {
+  const m = getActiveMatch(); if (!m) return;
+  const t = m.teams[el.dataset.team]; if (!t) return;
+  const b = (t.bowlers || [])[+el.dataset.idx]; if (!b) return;
+  b[el.dataset.field] = Math.max(0, parseInt(el.value, 10) || 0);
+  m.updatedAt = Date.now();
+  await db.saveMatch(m);
+}
+
+/* ---------- 12. Scoring input handlers (Quick Mode) ---------- */
 function updateScoreLocal(el) {
   const m = getActiveMatch(); if (!m) return;
   const t = m.teams[el.dataset.team]; if (!t) return;
@@ -715,6 +911,61 @@ function renderAwards() {
     '</div>';
 }
 
+/* ---------- 13b. Printable summary ---------- */
+function printMatchHTML(m) {
+  const res = resultOf(m);
+  const ids = Object.keys(m.teams);
+  let h = '<div style="page-break-inside:avoid;margin-bottom:18px">';
+  h += '<h3>' + esc(m.name) + ' <small>(' + fmtDate(m.createdAt) + ' · ' + (m.mode === 'quick' ? 'Quick' : 'Detailed') + (m.status === 'live' ? ' · LIVE' : '') + ')</small></h3>';
+  if (res) h += '<p style="margin:2px 0 8px"><strong>' + (res.draw ? 'Result: Draw' : 'Winner: ' + esc(res.winnerName)) + '</strong></p>';
+  ids.forEach(id => {
+    const t = m.teams[id], meta = getTeam(id);
+    h += '<h4>' + esc(meta.name) + ' — ' + (t.runs || 0) + '/' + (t.wickets || 0) + (m.mode === 'detailed' ? ' (' + fmtOvers(totalBalls(t)) + ' ov)' : '') + '</h4>';
+    if (m.mode === 'detailed') {
+      if (t.players && t.players.length) {
+        h += '<table><tr><th>Batter</th><th>Runs</th><th>Balls</th><th>4s</th><th>6s</th><th>Status</th></tr>';
+        t.players.forEach(p => h += '<tr><td>' + esc(playerLabel(p, id)) + '</td><td>' + (p.runs || 0) + '</td><td>' + (p.balls || 0) + '</td><td>' + (p.fours || 0) + '</td><td>' + (p.sixes || 0) + '</td><td>' + (p.out ? 'Out' : 'Not out') + '</td></tr>');
+        h += '</table>';
+      }
+      if (t.bowlers && t.bowlers.length) {
+        h += '<table><tr><th>Bowler</th><th>Overs</th><th>Runs</th><th>Wickets</th></tr>';
+        t.bowlers.forEach(b => h += '<tr><td>' + esc(b.member ? displayNameOf(id, b.member) : b.name) + '</td><td>' + fmtOvers(b.balls || 0) + '</td><td>' + (b.runs || 0) + '</td><td>' + (b.wickets || 0) + '</td></tr>');
+        h += '</table>';
+      }
+    }
+  });
+  h += '</div>';
+  return h;
+}
+function buildPrintSummary() {
+  const awards = computeAwards();
+  const u = state.user;
+  let h = '<h1>Thursday Cricket — Match Summary</h1>';
+  h += '<p class="print-meta">' + new Date().toLocaleString() + (u ? ' · Prepared by ' + esc(u.displayName) : '') + '</p>';
+  h += '<h2>Team Totals</h2>';
+  h += '<table><tr><th>Team</th><th>Matches</th><th>Runs</th><th>Wickets</th></tr>';
+  Object.values(state.teams).forEach(t => {
+    const ms = state.matches.filter(m => m.teams[t.id]);
+    const runs = ms.reduce((s, m) => s + ((m.teams[t.id] && m.teams[t.id].runs) || 0), 0);
+    const wkts = ms.reduce((s, m) => s + ((m.teams[t.id] && m.teams[t.id].wickets) || 0), 0);
+    h += '<tr><td>' + esc(t.name) + '</td><td>' + ms.length + '</td><td>' + runs + '</td><td>' + wkts + '</td></tr>';
+  });
+  h += '</table>';
+  h += '<h2>Matches (' + state.matches.length + ')</h2>';
+  if (!state.matches.length) h += '<p><em>No matches yet.</em></p>';
+  state.matches.forEach(m => { h += printMatchHTML(m); });
+  h += '<h2>Awards</h2>';
+  h += '<table><tr><th>Award</th><th>Player</th><th>Detail</th></tr>';
+  [
+    ['Best Player', awards.bestPlayer, awards.bestPlayer ? awards.bestPlayer.runs + ' runs · ' + awards.bestPlayer.matchName : '—'],
+    ['Man of the Match', awards.mom, awards.mom ? awards.mom.impact + ' impact pts · ' + awards.mom.matchName : '—'],
+    ['Player of the Series', awards.pos, awards.pos ? awards.pos.impact + ' impact pts · ' + awards.pos.matches + ' match(es)' : '—']
+  ].forEach(r => h += '<tr><td>' + r[0] + '</td><td>' + (r[1] ? esc(r[1].label) : '—') + '</td><td>' + esc(r[2]) + '</td></tr>');
+  h += '</table>';
+  document.getElementById('print-area').innerHTML = h;
+  window.print();
+}
+
 /* ---------- 14. Team profile + secret-code vote ---------- */
 function saveDisplayName(name) {
   const t = (name || '').trim();
@@ -815,6 +1066,10 @@ function globalClick(e) {
     case 'add-player': addPlayer(el.dataset.team); break;
     case 'vote-yes': voteYes(); break;
     case 'go-match': showPanel('match'); break;
+    case 'ball': applyBall(el.dataset.team, +el.dataset.runs); break;
+    case 'wicket': applyWicket(el.dataset.team); break;
+    case 'undo': undoBall(el.dataset.team); break;
+    case 'set-striker': setStriker(el.dataset.team, +el.dataset.idx); break;
   }
 }
 function globalSubmit(e) {
@@ -827,12 +1082,15 @@ function globalSubmit(e) {
 }
 function globalInput(e) {
   const el = e.target;
-  if (el && el.dataset && el.dataset.score !== undefined) updateScoreLocal(el);
+  if (!el || !el.dataset) return;
+  if (el.dataset.score !== undefined) updateScoreLocal(el);
+  else if (el.dataset.bowl !== undefined) updateBowlerLocal(el);
 }
 function globalChange(e) {
   const el = e.target;
   if (!el || !el.dataset) return;
   if (el.dataset.score !== undefined) saveScoreField(el);
+  else if (el.dataset.bowl !== undefined) saveBowlerField(el);
   else if (el.dataset.out !== undefined) toggleOut(el);
   else if (el.dataset.rename !== undefined) renamePlayer(el);
 }
@@ -859,6 +1117,7 @@ function init() {
     if (b) showPanel(b.dataset.view);
   });
   document.getElementById('chart-select').addEventListener('change', renderCharts);
+  document.getElementById('print-btn').addEventListener('click', buildPrintSummary);
 
   document.addEventListener('click', globalClick);
   document.addEventListener('submit', globalSubmit);

@@ -109,8 +109,7 @@ code {
 .card-title { font-size: 1.05rem; margin-bottom: 12px; }
 
 /* ---------- Login ---------- */
-#view-login { display: grid; place-items: center; min-height: 100vh; padding: 20px; }
-#view-login.is-active { display: grid; }
+#view-login.is-active { display: grid; place-items: center; min-height: 100vh; padding: 20px; }
 .login-card { width: 100%; max-width: 400px; padding: 32px 26px; text-align: center; }
 .brand { margin-bottom: 24px; }
 .logo {
@@ -337,6 +336,49 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--blue); c
 /* ---------- Guest player name input ---------- */
 .p-name-input { font-weight: 600; padding: 8px 10px; font-size: 0.9rem; }
 
+/* ---------- Ball-by-ball run pad (Detailed Mode) ---------- */
+.runpad { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.run-btn {
+  flex: 1 0 44px; min-width: 44px; height: 52px;
+  font-size: 1.15rem; font-weight: 800;
+  border-radius: 12px; border: 1px solid var(--glass-border);
+  background: var(--glass-strong); color: var(--white);
+  cursor: pointer;
+  transition: transform 0.08s ease, background 0.15s ease;
+}
+.run-btn:active { transform: scale(0.93); background: var(--blue); }
+.run-btn.wicket { background: rgba(248,113,113,0.18); color: var(--danger); border-color: rgba(248,113,113,0.35); }
+.run-btn.undo { background: rgba(148,163,184,0.15); color: var(--muted); }
+.batting-line { font-size: 0.9rem; color: var(--muted); margin-top: 10px; }
+.batters { margin-top: 10px; }
+.prow {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; margin-bottom: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  background: rgba(0,0,0,0.2);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.prow.is-striker { border-color: var(--cyan); background: rgba(34,211,238,0.1); }
+.prow.is-out { opacity: 0.55; }
+.prow .p-name { font-weight: 700; }
+.prow .p-stat { font-size: 0.82rem; color: var(--muted); }
+
+/* ---------- Over counter (Detailed Mode) ---------- */
+.over-dots { display: flex; gap: 4px; margin-top: 6px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,0.12); }
+.dot.on { background: var(--cyan); }
+
+/* ---------- Bowling figures (Detailed Mode) ---------- */
+.bowlers { margin-top: 6px; }
+.bowl-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.06); flex-wrap: wrap; }
+.bowl-row .b-name { font-weight: 700; min-width: 84px; }
+.bowl-row .b-overs { font-size: 0.85rem; color: var(--cyan); font-weight: 700; min-width: 54px; }
+.bowl-row .b-inputs { display: flex; gap: 6px; flex: 1; }
+.bowl-row .b-inputs label { font-size: 0.66rem; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+.bowl-row .b-inputs input { width: 56px; padding: 6px 8px; font-size: 0.85rem; }
+
 /* ---------- Utilities ---------- */
 .mt { margin-top: 14px; }
 .muted { color: var(--muted); }
@@ -368,4 +410,26 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--blue); c
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ---------- Print (printable summary) ---------- */
+#print-area { display: none; }
+@media print {
+  .bg, #app, .toast { display: none !important; }
+  body { background: #fff !important; }
+  #print-area {
+    display: block !important;
+    color: #000;
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  #print-area h1 { font-size: 24px; margin: 0 0 2px; }
+  #print-area h2 { font-size: 17px; margin: 18px 0 8px; border-bottom: 2px solid #000; padding-bottom: 4px; }
+  #print-area h3 { font-size: 15px; margin: 14px 0 4px; }
+  #print-area h4 { font-size: 13px; margin: 10px 0 4px; }
+  #print-area table { border-collapse: collapse; width: 100%; margin: 6px 0 10px; font-size: 12px; }
+  #print-area th, #print-area td { border: 1px solid #999; padding: 4px 8px; text-align: left; }
+  #print-area th { background: #f0f0f0; }
+  #print-area small { color: #555; font-weight: 400; }
+  #print-area .print-meta { color: #555; font-size: 12px; margin: 0 0 12px; }
 }

@@ -109,6 +109,11 @@
             </div>
           </div>
           <div class="glass card" id="awards"></div>
+          <div class="glass card">
+            <h3 class="card-title">🖨 Printable Summary</h3>
+            <p class="hint" style="margin-top:0">Generate a clean, print-ready report of every match, scorecard and award.</p>
+            <button id="print-btn" class="btn btn-primary btn-block mt" type="button">🖨 Print Match Summary</button>
+          </div>
         </div>
 
         <!-- Team / profile / secret-code vote -->
@@ -125,6 +130,9 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- Printable report (hidden on screen, shown only when printing) -->
+  <div id="print-area" aria-hidden="true"></div>
 
   <!-- CDN libraries (order matters) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
