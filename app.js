@@ -79,7 +79,8 @@ const state = {
   matches: [],
   votes: {},           // { [teamId]: { proposedCode, votes: {member:true} } }
   players: {},         // { [teamId__member]: { displayName } }
-  activeMatchId: null
+  activeMatchId: null,
+  syncError: false
 };
 
 let uiMode = 'quick';       // currently selected scoring mode in the setup form
@@ -129,11 +130,49 @@ function majority(teamId) {
   return Math.floor((getTeam(teamId).members || []).length / 2) + 1;
 }
 function fmtOvers(balls) { return Math.floor((balls || 0) / 6) + '.' + ((balls || 0) % 6); }
+function parseOversToBalls(val) {
+  if (val === null || val === undefined || val === '') return 0;
+  const num = parseFloat(val) || 0;
+  const fullOvers = Math.floor(num);
+  const remBalls = Math.min(5, Math.max(0, Math.round((num - fullOvers) * 10)));
+  return (fullOvers * 6) + remBalls;
+}
+function isDetailedMatch(m) {
+  if (!m) return false;
+  return m.mode === 'detailed' || m.mode === 'post-detailed' || (m.teams && Object.values(m.teams).some(t => t.players && t.players.length > 0));
+}
+function modeLabel(mode) {
+  switch (mode) {
+    case 'quick': return '⚡ Quick Match';
+    case 'detailed': return '📋 Live Detailed';
+    case 'retro': return '🗂 Post-Match Retro';
+    case 'post-detailed': return '📝 Post-Match Detailed';
+    default: return '🏏 Match';
+  }
+}
 function overDots(balls) {
   const b = (balls || 0) % 6;
   let h = '';
   for (let i = 0; i < 6; i++) h += '<span class="dot' + (i < b ? ' on' : '') + '"></span>';
   return h;
+}
+
+// Deep sanitize object to strip undefined values so Firestore writes never fail
+function sanitizeForFirestore(obj) {
+  if (obj === null || obj === undefined) return null;
+  if (typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) {
+    return obj
+      .filter(item => item !== undefined)
+      .map(item => sanitizeForFirestore(item));
+  }
+  const clean = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) {
+      clean[k] = sanitizeForFirestore(v);
+    }
+  }
+  return clean;
 }
 
 /* ---------- 5. Data layer (Firestore ⇄ localStorage) ---------- */
@@ -152,7 +191,7 @@ const db = (() => {
   }
   function load(key) { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
   function save(key, val) {
-    localStorage.setItem(key, JSON.stringify(val));
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {}
     if (bc) { try { bc.postMessage({ type: 'change', key }); } catch (e) {} }
   }
   function seed() {
@@ -165,15 +204,35 @@ const db = (() => {
   function emitLocal(col) { emit(col, col === 'matches' ? (load(LS.matches) || []) : (load(LS[col]) || {})); }
   function emitAllLocal() { ['teams', 'matches', 'votes', 'players'].forEach(emitLocal); }
 
-  function init() {
+  async function ensureAuth() {
+    if (typeof firebase === 'undefined' || !firebase.auth) return null;
+    if (firebase.auth().currentUser) return firebase.auth().currentUser;
+    try {
+      const authPromise = firebase.auth().signInAnonymously();
+      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Auth timeout')), 4000));
+      const res = await Promise.race([authPromise, timeoutPromise]);
+      return res ? res.user : null;
+    } catch (e) {
+      console.warn('[Thursday Cricket] Anonymous auth attempt:', e && e.message);
+      return null;
+    }
+  }
+
+  async function init() {
     const fbOk = typeof firebase !== 'undefined' && !isPlaceholder(FIREBASE_CONFIG);
     if (fbOk) {
       try {
         if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
         fs = firebase.firestore();
+        try {
+          await fs.enablePersistence({ synchronizeTabs: true });
+        } catch (e) {
+          // Handled gracefully: multi-tab or unsupported persistence
+        }
+        await ensureAuth();
         mode = 'firestore';
       } catch (e) {
-        console.warn('[Thursday Cricket] Firebase init failed — using local mode.', e);
+        console.warn('[Thursday Cricket] Firebase init fallback to local:', e);
         mode = 'local';
       }
     } else {
@@ -190,54 +249,137 @@ const db = (() => {
   function subscribe(col, cb) {
     subs[col].push(cb);
     if (mode === 'firestore') {
-      fs.collection(cols[col]).onSnapshot(snap => {
-        if (col === 'matches') { const arr = []; snap.forEach(d => arr.push(d.data())); emit(col, arr); }
-        else { const obj = {}; snap.forEach(d => obj[d.id] = d.data()); emit(col, obj); }
-      }, err => { console.warn('[Thursday Cricket] Firestore read error:', err); emitLocal(col); });
+      fs.collection(cols[col]).onSnapshot(async snap => {
+        if (onErrorCb) onErrorCb(false);
+        state.syncError = false;
+        renderSyncStatus();
+
+        // If cloud teams collection is empty, auto-seed default teams to Firestore
+        if (col === 'teams' && snap.empty) {
+          try {
+            const def = defaultTeams();
+            const batch = fs.batch();
+            Object.values(def).forEach(t => {
+              batch.set(fs.collection('teams').doc(t.id), sanitizeForFirestore(t));
+            });
+            await batch.commit();
+          } catch (seedErr) {
+            console.warn('[Thursday Cricket] Cloud seed teams error:', seedErr);
+          }
+        }
+
+        if (col === 'matches') {
+          const arr = [];
+          snap.forEach(d => arr.push(d.data()));
+          save(LS.matches, arr);
+          emit(col, arr);
+        } else {
+          const obj = {};
+          snap.forEach(d => obj[d.id] = d.data());
+          save(LS[col], obj);
+          emit(col, obj);
+        }
+      }, err => {
+        console.warn('[Thursday Cricket] Firestore read error on ' + col + ':', err);
+        if (onErrorCb) onErrorCb(true);
+        state.syncError = true;
+        renderSyncStatus();
+        emitLocal(col);
+      });
     } else {
       emitLocal(col);
     }
   }
 
-  let errTimer = null;
-  function reportErr(label, e) {
+  let onErrorCb = null;
+  function onError(cb) { onErrorCb = cb; }
+  function fail(label, e) {
     console.error('[Thursday Cricket] ' + label + ' failed:', (e && e.message) || e);
-    clearTimeout(errTimer);
-    errTimer = setTimeout(() => toast('⚠️ Sync failed — check your connection and Firestore rules.', 'error'), 400);
+    if (onErrorCb) onErrorCb(true);
+    clearTimeout(fail._t);
+    fail._t = setTimeout(() => toast('⚠️ Firestore sync issue — check rules & connection.', 'error'), 300);
   }
 
   async function saveTeam(id, data) {
+    const clean = sanitizeForFirestore(data);
     try {
-      if (mode === 'firestore') { await fs.collection('teams').doc(id).set(data, { merge: true }); }
-      else { const all = load(LS.teams) || {}; all[id] = data; save(LS.teams, all); emitLocal('teams'); }
-    } catch (e) { reportErr('saveTeam', e); }
-  }
-  async function saveMatch(m) {
-    try {
-      if (mode === 'firestore') { await fs.collection('matches').doc(m.id).set(m); }
-      else { const all = load(LS.matches) || []; const i = all.findIndex(x => x.id === m.id); if (i >= 0) all[i] = m; else all.push(m); save(LS.matches, all); emitLocal('matches'); }
-    } catch (e) { reportErr('saveMatch', e); }
-  }
-  async function deleteMatch(id) {
-    try {
-      if (mode === 'firestore') { await fs.collection('matches').doc(id).delete(); }
-      else { save(LS.matches, (load(LS.matches) || []).filter(x => x.id !== id)); emitLocal('matches'); }
-    } catch (e) { reportErr('deleteMatch', e); }
-  }
-  async function saveVote(teamId, v) {
-    try {
-      if (mode === 'firestore') { if (v.proposedCode) await fs.collection('teamVotes').doc(teamId).set(v); else await fs.collection('teamVotes').doc(teamId).delete(); }
-      else { const all = load(LS.votes) || {}; if (v.proposedCode) all[teamId] = v; else delete all[teamId]; save(LS.votes, all); emitLocal('votes'); }
-    } catch (e) { reportErr('saveVote', e); }
-  }
-  async function savePlayer(key, data) {
-    try {
-      if (mode === 'firestore') { await fs.collection('players').doc(key).set(data); }
-      else { const all = load(LS.players) || {}; all[key] = data; save(LS.players, all); emitLocal('players'); }
-    } catch (e) { reportErr('savePlayer', e); }
+      if (mode === 'firestore') {
+        await ensureAuth();
+        await fs.collection('teams').doc(id).set(clean, { merge: true });
+      }
+    } catch (e) { fail('saveTeam', e); }
+    finally {
+      const all = load(LS.teams) || {};
+      all[id] = clean;
+      save(LS.teams, all);
+      if (mode !== 'firestore') emitLocal('teams');
+    }
   }
 
-  return { init, subscribe, saveTeam, saveMatch, deleteMatch, saveVote, savePlayer, get mode() { return mode; } };
+  async function saveMatch(m) {
+    const clean = sanitizeForFirestore(m);
+    try {
+      if (mode === 'firestore') {
+        await ensureAuth();
+        await fs.collection('matches').doc(clean.id).set(clean);
+      }
+    } catch (e) { fail('saveMatch', e); }
+    finally {
+      const all = load(LS.matches) || [];
+      const i = all.findIndex(x => x.id === clean.id);
+      if (i >= 0) all[i] = clean; else all.push(clean);
+      save(LS.matches, all);
+      if (mode !== 'firestore') emitLocal('matches');
+    }
+  }
+
+  async function deleteMatch(id) {
+    try {
+      if (mode === 'firestore') {
+        await ensureAuth();
+        await fs.collection('matches').doc(id).delete();
+      }
+    } catch (e) { fail('deleteMatch', e); }
+    finally {
+      save(LS.matches, (load(LS.matches) || []).filter(x => x.id !== id));
+      if (mode !== 'firestore') emitLocal('matches');
+    }
+  }
+
+  async function saveVote(teamId, v) {
+    const clean = sanitizeForFirestore(v);
+    try {
+      if (mode === 'firestore') {
+        await ensureAuth();
+        if (clean && clean.proposedCode) await fs.collection('teamVotes').doc(teamId).set(clean);
+        else await fs.collection('teamVotes').doc(teamId).delete();
+      }
+    } catch (e) { fail('saveVote', e); }
+    finally {
+      const all = load(LS.votes) || {};
+      if (clean && clean.proposedCode) all[teamId] = clean; else delete all[teamId];
+      save(LS.votes, all);
+      if (mode !== 'firestore') emitLocal('votes');
+    }
+  }
+
+  async function savePlayer(key, data) {
+    const clean = sanitizeForFirestore(data);
+    try {
+      if (mode === 'firestore') {
+        await ensureAuth();
+        await fs.collection('players').doc(key).set(clean);
+      }
+    } catch (e) { fail('savePlayer', e); }
+    finally {
+      const all = load(LS.players) || {};
+      all[key] = clean;
+      save(LS.players, all);
+      if (mode !== 'firestore') emitLocal('players');
+    }
+  }
+
+  return { init, onError, subscribe, saveTeam, saveMatch, deleteMatch, saveVote, savePlayer, get mode() { return mode; } };
 })();
 
 /* ---------- 6. Subscription → state → render ---------- */
@@ -332,19 +474,26 @@ function renderHeader() {
 }
 function renderSyncStatus() {
   const online = db.mode === 'firestore';
+  const error = online && state.syncError;
   const main = document.getElementById('sync-status');
   if (main) {
-    main.textContent = online ? '● Live' : '● Local';
-    main.className = 'sync-status ' + (online ? 'online' : 'local');
-    main.title = online
-      ? 'Connected to Firestore — live sync across devices'
-      : 'Local mode — paste your apiKey in app.js to enable live sync';
+    if (error) {
+      main.textContent = '● Error — check rules';
+      main.className = 'sync-status error';
+      main.title = 'Firestore is rejecting requests — deploy firestore.rules and enable the Anonymous auth provider.';
+    } else {
+      main.textContent = online ? '● Live' : '● Local';
+      main.className = 'sync-status ' + (online ? 'online' : 'local');
+      main.title = online ? 'Connected to Firestore — live sync across devices' : 'Local demo mode — add your apiKey for cloud sync';
+    }
   }
   const login = document.getElementById('login-sync');
   if (login) {
-    login.textContent = online ? '● Live sync (Firestore)' : '● Local mode (no Firestore)';
-    login.className = 'sync-status ' + (online ? 'online' : 'local');
+    login.textContent = error ? '● Firestore error — check rules' : (online ? '● Live sync (Firestore)' : '● Local demo (no Firebase)');
+    login.className = 'sync-status ' + (error ? 'error' : (online ? 'online' : 'local'));
   }
+  const banner = document.getElementById('sync-error');
+  if (banner) banner.classList.toggle('hidden', !error);
 }
 
 /* ---------- 9. Dashboard ---------- */
@@ -363,21 +512,23 @@ function resultOf(m) {
   return { draw: false, winnerName: getTeam(w).name, winnerId: w };
 }
 function matchSummaryHTML(m) {
-  const ids = Object.keys(m.teams);
+  const ids = Object.keys(m.teams || {});
   const res = resultOf(m);
   const badge = m.status === 'live'
-    ? '<span class="badge badge-live">● Live</span>'
+    ? '<span class="badge badge-live"><span class="pulse" style="margin-right:4px"></span>Live</span>'
     : '<span class="badge ' + (res && res.draw ? 'badge-draw' : 'badge-won') + '">' + (res && res.draw ? 'Draw' : 'Winner: ' + esc(res && res.winnerName)) + '</span>';
   return '' +
     '<div class="match-item glass">' +
       '<div class="m-top">' +
-        '<div><div class="m-name">' + esc(m.name) + '</div><div class="m-date">' + fmtDate(m.createdAt) + ' · ' + (m.mode === 'quick' ? '⚡ Quick' : '📋 Detailed') + '</div></div>' +
+        '<div><div class="m-name">' + esc(m.name) + '</div><div class="m-date">' + fmtDate(m.createdAt) + ' · ' + modeLabel(m.mode) + '</div></div>' +
         '<div class="row">' + badge +
-          (m.status === 'completed' ? '<button class="btn btn-sm btn-ghost" data-action="delete-match" data-id="' + m.id + '" title="Delete">🗑</button>' : '') +
+          '<button class="btn btn-sm btn-ghost" data-action="open-match" data-id="' + m.id + '">Scorecard →</button>' +
+          (m.status === 'completed' ? '<button class="btn btn-sm btn-ghost" data-action="reopen-match" data-id="' + m.id + '" title="Re-open to edit">✏️</button>' : '') +
+          '<button class="btn btn-sm btn-ghost" data-action="delete-match" data-id="' + m.id + '" title="Delete">🗑</button>' +
         '</div>' +
       '</div>' +
       '<div class="match-summary">' +
-        ids.map(id => { const t = m.teams[id]; const meta = getTeam(id); return '<div class="side"><div class="s-name">' + esc(meta.name) + '</div><div class="s-score">' + (t.runs || 0) + '/' + (t.wickets || 0) + '</div></div>'; }).join('<div class="vs">vs</div>') +
+        ids.map(id => { const t = m.teams[id] || {}; const meta = getTeam(id); return '<div class="side"><div class="s-name">' + esc(meta.name) + '</div><div class="s-score">' + (t.runs || 0) + '/' + (t.wickets || 0) + '</div></div>'; }).join('<div class="vs">vs</div>') +
       '</div>' +
     '</div>';
 }
@@ -394,10 +545,10 @@ function renderDashboard() {
 
   const live = state.matches.filter(m => m.status === 'live');
   document.getElementById('dash-live').innerHTML =
-    '<h3 class="card-title">Live Now</h3>' +
+    '<h3 class="card-title"><span class="pulse" style="margin-right:6px"></span>Live Scoreboards</h3>' +
     (live.length
       ? live.map(m =>
-          '<div class="spread"><div><strong>' + esc(m.name) + '</strong><br/><span class="muted" style="font-size:.8rem">' + esc(summaryLine(m)) + '</span></div>' +
+          '<div class="spread"><div><strong>' + esc(m.name) + '</strong><br/><span class="muted" style="font-size:.8rem">' + esc(summaryLine(m)) + ' · ' + modeLabel(m.mode) + '</span></div>' +
           '<button class="btn btn-sm" data-action="open-match" data-id="' + m.id + '">Open</button></div>' +
           '<hr style="border-color:rgba(255,255,255,.08);margin:10px 0" />').join('')
       : '<div class="empty" style="padding:18px 8px">No live match right now.</div>') +
@@ -423,10 +574,12 @@ function renderSetupForm() {
       '<label class="field"><span>Match Name</span><input id="match-name" type="text" placeholder="e.g. Weekend Showdown" maxlength="60" required /></label>' +
       '<span class="field"><span>Scoring Mode</span></span>' +
       '<div class="mode-group">' +
-        '<div class="mode-option' + (uiMode === 'quick' ? ' is-selected' : '') + '" data-mode="quick"><div class="m-title">⚡ Quick Mode</div><div class="m-desc">Enter total runs &amp; wickets at once.</div></div>' +
-        '<div class="mode-option' + (uiMode === 'detailed' ? ' is-selected' : '') + '" data-mode="detailed"><div class="m-title">📋 Detailed Mode</div><div class="m-desc">Score player by player.</div></div>' +
+        '<div class="mode-option' + (uiMode === 'quick' ? ' is-selected' : '') + '" data-mode="quick"><div class="m-title">⚡ Quick Match</div><div class="m-desc">Fast totals (runs &amp; wickets directly).</div></div>' +
+        '<div class="mode-option' + (uiMode === 'detailed' ? ' is-selected' : '') + '" data-mode="detailed"><div class="m-title">📋 Live Detailed</div><div class="m-desc">Live ball-by-ball striker run pad.</div></div>' +
+        '<div class="mode-option' + (uiMode === 'retro' ? ' is-selected' : '') + '" data-mode="retro"><div class="m-title">🗂 Post-Match Retro</div><div class="m-desc">Quick retroactive totals &amp; overs.</div></div>' +
+        '<div class="mode-option' + (uiMode === 'post-detailed' ? ' is-selected' : '') + '" data-mode="post-detailed"><div class="m-title">📝 Post-Match Detailed</div><div class="m-desc">Complete player-by-player batting &amp; bowling scorecard.</div></div>' +
       '</div>' +
-      '<button type="submit" class="btn btn-primary btn-block">🚀 Start Match</button>' +
+      '<button type="submit" class="btn btn-primary btn-block">🚀 Start / Log Match</button>' +
     '</form>';
 }
 function renderLiveArea() {
@@ -435,43 +588,145 @@ function renderLiveArea() {
 
   if (state.activeMatchId) {
     const m = state.matches.find(x => x.id === state.activeMatchId);
-    if (m && m.status === 'live') { el.innerHTML = liveHTML(m); return; }
+    if (m) { el.innerHTML = liveHTML(m); return; }
     state.activeMatchId = null;
   }
   if (live.length) {
     el.innerHTML =
-      '<h3 class="card-title"><span class="pulse"></span> Live Matches</h3>' +
+      '<h3 class="card-title"><span class="pulse"></span> Active / Live Matches</h3>' +
       live.map(m =>
         '<div class="match-item glass"><div class="m-top">' +
-          '<div><div class="m-name">' + esc(m.name) + '</div><div class="m-date">' + fmtDate(m.updatedAt) + ' · ' + m.mode + '</div></div>' +
-          '<button class="btn btn-sm" data-action="open-match" data-id="' + m.id + '">Open →</button>' +
+          '<div><div class="m-name">' + esc(m.name) + '</div><div class="m-date">' + fmtDate(m.updatedAt) + ' · ' + modeLabel(m.mode) + '</div></div>' +
+          '<button class="btn btn-sm" data-action="open-match" data-id="' + m.id + '">Scorecard →</button>' +
         '</div></div>').join('');
     return;
   }
-  el.innerHTML = '<div class="empty"><span class="e-emoji">🏏</span>No live match right now.<br/>Start one above to begin scoring.</div>';
+  el.innerHTML = '<div class="empty"><span class="e-emoji">🏏</span>No active scoreboard right now.<br/>Start or select a match above to begin scoring.</div>';
 }
 function liveHTML(m) {
-  const youTeam = state.user ? state.user.teamId : null;
-  const cards = Object.keys(m.teams).map(tid =>
-    teamCardHTML(tid, m.teams[tid], getTeam(tid), m.mode, tid === youTeam)).join('');
+  const isPostDetailed = m.mode === 'post-detailed';
+  const isRetro = m.mode === 'retro';
+  const isQuick = m.mode === 'quick';
+  // Allow seamless input across both teams for Post-Match Detailed, Retro, and Quick modes
+  const canEditBoth = isPostDetailed || isRetro || isQuick;
+  const cards = Object.keys(m.teams || {}).map(tid =>
+    teamCardHTML(tid, m.teams[tid], getTeam(tid), m.mode, canEditBoth || tid === (state.user ? state.user.teamId : null))).join('');
+  const headerAction = m.status === 'live'
+    ? '<button class="btn btn-danger btn-sm" data-action="end-match" data-id="' + m.id + '">🏁 ' + (isPostDetailed || isRetro ? 'Save & Finalize Match' : 'End Match') + '</button>'
+    : '<div class="row"><span class="badge badge-won">✓ Completed</span><button class="btn btn-sm btn-ghost" data-action="reopen-match" data-id="' + m.id + '" title="Reopen match to edit">✏️ Edit</button></div>';
   return '' +
     '<div class="spread">' +
-      '<div><div class="row"><span class="pulse"></span><h3 class="card-title" style="margin:0">' + esc(m.name) + '</h3></div>' +
-      '<div class="muted" style="font-size:.82rem">' + (m.mode === 'quick' ? '⚡ Quick Mode' : '📋 Detailed Mode') + ' · updated ' + fmtDate(m.updatedAt) + '</div></div>' +
-      '<button class="btn btn-danger btn-sm" data-action="end-match" data-id="' + m.id + '">🏁 End Match</button>' +
+      '<div><div class="row">' + (m.status === 'live' ? '<span class="pulse"></span>' : '') + '<h3 class="card-title" style="margin:0">' + esc(m.name) + '</h3></div>' +
+      '<div class="muted" style="font-size:.82rem">' + modeLabel(m.mode) + ' · updated ' + fmtDate(m.updatedAt) + '</div></div>' +
+      headerAction +
     '</div>' +
+    (isPostDetailed ? '<p class="hint" style="margin-top:6px">📝 <strong>Post-Match Detailed Mode</strong>: Log runs, balls, 4s, 6s, dismissal out/not-out, and bowling figures for both teams seamlessly.</p>' : '') +
+    (isRetro ? '<p class="hint" style="margin-top:6px">🗂 <strong>Post-Match Retro</strong>: Enter match total runs, wickets, and overs for both teams.</p>' : '') +
     '<div class="grid grid-2 mt">' + cards + '</div>';
 }
 function teamCardHTML(tid, t, meta, mode, isYou) {
   const color = meta.color || '#3b82f6';
+  t = t || { runs: 0, wickets: 0, overs: 0, players: [], bowlers: [] };
   let body = '';
   if (mode === 'quick') {
     body =
       '<div class="scoreline mt"><span class="score-big" id="totals-' + tid + '">' + (t.runs || 0) + '</span><span class="score-meta">/ ' + (t.wickets || 0) + ' wickets</span></div>' +
       '<div class="grid grid-2 mt">' +
         '<label class="field"><span>Team Runs</span><input type="number" min="0" inputmode="numeric" value="' + (t.runs || 0) + '" data-score data-team="' + tid + '" data-field="runs"' + (isYou ? '' : ' disabled') + ' /></label>' +
-        '<label class="field"><span>Wickets</span><input type="number" min="0" inputmode="numeric" value="' + (t.wickets || 0) + '" data-score data-team="' + tid + '" data-field="wickets"' + (isYou ? '' : ' disabled') + ' /></label>' +
+        '<label class="field"><span>Wickets Fallen</span><input type="number" min="0" max="10" inputmode="numeric" value="' + (t.wickets || 0) + '" data-score data-team="' + tid + '" data-field="wickets"' + (isYou ? '' : ' disabled') + ' /></label>' +
       '</div>';
+  } else if (mode === 'post-detailed') {
+    const rows = (t.players || []).map((p, i) => {
+      const label = playerLabel(p, tid);
+      const nameHtml = p.member
+        ? '<div class="pd-name"><span class="badge badge-you" style="font-size:.7rem;padding:2px 8px">' + esc(meta.short) + '</span> ' + esc(label) + '</div>'
+        : '<div class="row" style="flex:1"><input type="text" value="' + esc(p.name) + '" data-rename data-team="' + tid + '" data-idx="' + i + '" class="p-name-input" placeholder="Player name" /><button type="button" class="btn btn-sm btn-ghost" data-action="remove-player" data-team="' + tid + '" data-idx="' + i + '" title="Remove">✕</button></div>';
+      const sr = p.balls ? ((p.runs / p.balls) * 100).toFixed(1) : '0.0';
+
+      return '' +
+        '<div class="player-detailed-card' + (p.out ? ' is-dismissed' : '') + '">' +
+          '<div class="pd-header">' +
+            nameHtml +
+            '<span class="pd-sr">SR: ' + sr + '</span>' +
+          '</div>' +
+          '<div class="pd-inputs">' +
+            '<div class="pd-input-wrap"><label>Runs</label><input type="number" min="0" inputmode="numeric" value="' + (p.runs || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="runs"' + (isYou ? '' : ' disabled') + ' /></div>' +
+            '<div class="pd-input-wrap"><label>Balls</label><input type="number" min="0" inputmode="numeric" value="' + (p.balls || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="balls"' + (isYou ? '' : ' disabled') + ' /></div>' +
+            '<div class="pd-input-wrap"><label>4s</label><input type="number" min="0" inputmode="numeric" value="' + (p.fours || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="fours"' + (isYou ? '' : ' disabled') + ' /></div>' +
+            '<div class="pd-input-wrap"><label>6s</label><input type="number" min="0" inputmode="numeric" value="' + (p.sixes || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="sixes"' + (isYou ? '' : ' disabled') + ' /></div>' +
+          '</div>' +
+          '<div class="pd-footer">' +
+            '<label class="pd-status-toggle' + (p.out ? ' is-out' : ' not-out') + '">' +
+              '<input type="checkbox" data-out data-team="' + tid + '" data-idx="' + i + '"' + (p.out ? ' checked' : '') + (isYou ? '' : ' disabled') + ' />' +
+              '<span>' + (p.out ? '❌ Out (Dismissed)' : '🏏 Not Out') + '</span>' +
+            '</label>' +
+          '</div>' +
+        '</div>';
+    }).join('');
+
+    const bowlingRows = (t.bowlers || []).map((b, i) => {
+      const bLabel = b.member ? displayNameOf(tid, b.member) : b.name;
+      const balls = b.balls || 0;
+      const oversVal = fmtOvers(balls);
+      const econ = balls > 0 ? (b.runs / (balls / 6)).toFixed(1) : '0.0';
+
+      return '' +
+        '<div class="bowl-detailed-card">' +
+          '<div class="bd-header">' +
+            '<div class="bd-name">' + esc(bLabel) + '</div>' +
+            '<div class="bd-econ">Econ: ' + econ + '</div>' +
+          '</div>' +
+          '<div class="bd-inputs">' +
+            '<div class="pd-input-wrap"><label>Overs (e.g. 2.4)</label><input type="number" step="0.1" min="0" inputmode="decimal" value="' + oversVal + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="overs"' + (isYou ? '' : ' disabled') + ' /></div>' +
+            '<div class="pd-input-wrap"><label>Runs</label><input type="number" min="0" inputmode="numeric" value="' + (b.runs || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="runs"' + (isYou ? '' : ' disabled') + ' /></div>' +
+            '<div class="pd-input-wrap"><label>Wickets</label><input type="number" min="0" inputmode="numeric" value="' + (b.wickets || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="wickets"' + (isYou ? '' : ' disabled') + ' /></div>' +
+          '</div>' +
+        '</div>';
+    }).join('');
+
+    body =
+      '<div class="scoreline mt"><span class="score-big" id="totals-' + tid + '">' + (t.runs || 0) + '</span><span class="score-meta">/ ' + (t.wickets || 0) + ' wickets</span></div>' +
+      '<div class="scorecard-subhead"><span>🏏 Batting Scorecard</span>' + (isYou ? '<button type="button" class="btn btn-sm btn-ghost" data-action="add-player" data-team="' + tid + '">＋ Add Batter</button>' : '') + '</div>' +
+      '<div>' + (rows || '<div class="empty" style="padding:12px">No batters yet.</div>') + '</div>' +
+      '<div class="scorecard-subhead mt"><span>🎯 Bowling Figures</span>' + (isYou ? '<button type="button" class="btn btn-sm btn-ghost" data-action="add-bowler" data-team="' + tid + '">＋ Add Bowler</button>' : '') + '</div>' +
+      '<div>' + (bowlingRows || '<div class="empty" style="padding:12px">No bowlers yet.</div>') + '</div>';
+  } else if (mode === 'retro') {
+    const rows = (t.players || []).map((p, i) => {
+      const label = playerLabel(p, tid);
+      const nameHtml = p.member
+        ? '<div class="p-name">' + esc(label) + '</div>'
+        : '<input type="text" value="' + esc(p.name) + '" data-rename data-team="' + tid + '" data-idx="' + i + '" class="p-name-input" placeholder="Player name" />';
+      return '' +
+        '<div class="player-row">' + nameHtml +
+          '<div class="p-inputs">' +
+            '<label>Runs<input type="number" min="0" inputmode="numeric" value="' + (p.runs || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="runs"' + (isYou ? '' : ' disabled') + ' /></label>' +
+            '<label>Balls<input type="number" min="0" inputmode="numeric" value="' + (p.balls || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="balls"' + (isYou ? '' : ' disabled') + ' /></label>' +
+            '<label>4s<input type="number" min="0" inputmode="numeric" value="' + (p.fours || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="fours"' + (isYou ? '' : ' disabled') + ' /></label>' +
+            '<label>6s<input type="number" min="0" inputmode="numeric" value="' + (p.sixes || 0) + '" data-score data-team="' + tid + '" data-idx="' + i + '" data-field="sixes"' + (isYou ? '' : ' disabled') + ' /></label>' +
+          '</div>' +
+          '<label class="p-out' + (p.out ? ' is-out' : '') + '"><input type="checkbox" data-out data-team="' + tid + '" data-idx="' + i + '"' + (p.out ? ' checked' : '') + (isYou ? '' : ' disabled') + ' /> Out (dismissed)</label>' +
+        '</div>';
+    }).join('');
+    const bowling = '<div class="card-title mt">🎯 Bowling</div>' +
+      '<div class="bowlers">' + (t.bowlers || []).map((b, i) =>
+        '<div class="bowl-row">' +
+          '<div class="b-name">' + esc(b.member ? displayNameOf(tid, b.member) : b.name) + '</div>' +
+          '<div class="b-overs">' + fmtOvers(b.balls || 0) + ' ov</div>' +
+          '<div class="b-inputs">' +
+            '<label>Overs<input type="number" step="0.1" min="0" inputmode="decimal" value="' + fmtOvers(b.balls || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="overs"' + (isYou ? '' : ' disabled') + ' /></label>' +
+            '<label>Runs<input type="number" min="0" inputmode="numeric" value="' + (b.runs || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="runs"' + (isYou ? '' : ' disabled') + ' /></label>' +
+            '<label>Wkts<input type="number" min="0" inputmode="numeric" value="' + (b.wickets || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="wickets"' + (isYou ? '' : ' disabled') + ' /></label>' +
+          '</div>' +
+        '</div>').join('') + '</div>';
+    body =
+      '<div class="scoreline mt"><span class="score-big" id="totals-' + tid + '">' + (t.runs || 0) + '</span><span class="score-meta">/ ' + (t.wickets || 0) + ' wickets</span></div>' +
+      '<div class="grid grid-2 mt">' +
+        '<label class="field"><span>Team Runs</span><input type="number" min="0" inputmode="numeric" value="' + (t.runs || 0) + '" data-score data-team="' + tid + '" data-field="runs"' + (isYou ? '' : ' disabled') + ' /></label>' +
+        '<label class="field"><span>Wickets Fallen</span><input type="number" min="0" max="10" inputmode="numeric" value="' + (t.wickets || 0) + '" data-score data-team="' + tid + '" data-field="wickets"' + (isYou ? '' : ' disabled') + ' /></label>' +
+      '</div>' +
+      '<div class="mt">' + rows + '</div>' +
+      bowling +
+      (isYou ? '<button type="button" class="btn btn-sm btn-ghost mt" data-action="add-player" data-team="' + tid + '">＋ Add Player</button>' : '');
   } else {
     const striker = t.striker || 0;
     const rows = (t.players || []).map((p, i) => {
@@ -501,7 +756,7 @@ function teamCardHTML(tid, t, meta, mode, isYou) {
           '<div class="b-name">' + esc(b.member ? displayNameOf(tid, b.member) : b.name) + '</div>' +
           '<div class="b-overs">' + fmtOvers(b.balls || 0) + ' ov</div>' +
           '<div class="b-inputs">' +
-            '<label>Balls<input type="number" min="0" inputmode="numeric" value="' + (b.balls || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="balls"' + (isYou ? '' : ' disabled') + ' /></label>' +
+            '<label>Overs<input type="number" step="0.1" min="0" inputmode="decimal" value="' + fmtOvers(b.balls || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="overs"' + (isYou ? '' : ' disabled') + ' /></label>' +
             '<label>Runs<input type="number" min="0" inputmode="numeric" value="' + (b.runs || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="runs"' + (isYou ? '' : ' disabled') + ' /></label>' +
             '<label>Wkts<input type="number" min="0" inputmode="numeric" value="' + (b.wickets || 0) + '" data-bowl data-team="' + tid + '" data-idx="' + i + '" data-field="wickets"' + (isYou ? '' : ' disabled') + ' /></label>' +
           '</div>' +
@@ -514,7 +769,7 @@ function teamCardHTML(tid, t, meta, mode, isYou) {
       runpad +
       '<div class="batters" id="batters-' + tid + '">' + rows + '</div>' +
       bowling +
-      (isYou ? '<button type="button" class="btn btn-sm btn-ghost mt" data-action="add-player" data-team="' + tid + '">＋ Add Player</button>' : '');
+      (isYou ? '<button type="button" class="btn btn-sm btn-ghost mt" data-action="add-player" data-team="' + tid + '">＋ Add Batter</button>' : '');
   }
   return '' +
     '<div class="glass card team-card" style="border-top-color:' + color + '">' +
@@ -525,8 +780,10 @@ function teamCardHTML(tid, t, meta, mode, isYou) {
 
 function getActiveMatch() { return state.matches.find(m => m.id === state.activeMatchId); }
 function recomputeTeam(t) {
-  t.runs = (t.players || []).reduce((s, p) => s + (+p.runs || 0), 0);
-  t.wickets = (t.players || []).filter(p => p.out).length;
+  if (t.players && t.players.length) {
+    t.runs = t.players.reduce((s, p) => s + (+p.runs || 0), 0);
+    t.wickets = t.players.filter(p => p.out).length;
+  }
 }
 function updateTotalsEl(teamId) {
   const m = getActiveMatch(); if (!m) return;
@@ -541,16 +798,20 @@ function startMatch() {
   if (!name) return toast('Please enter a match name.', 'error');
   const id = 'm_' + uid();
   const teams = {};
+  const hasRoster = (uiMode === 'detailed' || uiMode === 'post-detailed');
+
   Object.values(state.teams).forEach(t => {
     teams[t.id] = {
-      runs: 0, wickets: 0,
-      striker: uiMode === 'detailed' ? 0 : undefined,
-      bowler: uiMode === 'detailed' ? 0 : undefined,
-      players: uiMode === 'detailed'
+      runs: 0,
+      wickets: 0,
+      overs: 0,
+      striker: 0,
+      bowler: 0,
+      players: hasRoster
         ? t.members.map(m => ({ key: m, name: displayNameOf(t.id, m), member: m, runs: 0, balls: 0, fours: 0, sixes: 0, out: false }))
         : [],
-      bowlers: uiMode === 'detailed'
-        ? t.members.map(m => ({ key: m, name: displayNameOf(t.id, m), member: m, balls: 0, runs: 0, wickets: 0 }))
+      bowlers: hasRoster
+        ? t.members.map(m => ({ key: m, name: displayNameOf(t.id, m), member: m, balls: 0, overs: 0, runs: 0, wickets: 0 }))
         : []
     };
   });
@@ -561,30 +822,64 @@ function startMatch() {
     nameEl.value = '';
     showSection('scoreboard-section');
     renderMatchPanel();
-    toast('Match "' + name + '" started — good luck! 🏏', 'success');
+    toast('Match "' + name + '" started — ' + modeLabel(uiMode) + '! 🏏', 'success');
   });
 }
 
 async function endMatch(id) {
   const m = state.matches.find(x => x.id === id); if (!m) return;
-  if (!confirm('End match "' + m.name + '" and finalize results?')) return;
+  if (!confirm('Finalize and save match "' + m.name + '"?')) return;
   m.status = 'completed';
   m.updatedAt = Date.now();
   await db.saveMatch(m);
-  if (state.activeMatchId === id) state.activeMatchId = null;
-  toast('Match completed. Awards updated! 🏆', 'success');
+  renderMatchPanel();
+  renderHistory();
+  renderAnalysis();
+  toast('Match completed & cloud synced! 🏆', 'success');
+}
+async function reopenMatch(id) {
+  const m = state.matches.find(x => x.id === id); if (!m) return;
+  m.status = 'live';
+  m.updatedAt = Date.now();
+  await db.saveMatch(m);
+  state.activeMatchId = id;
+  showSection('scoreboard-section');
+  renderMatchPanel();
+  toast('Scorecard reopened for editing.', 'success');
 }
 async function deleteMatch(id) {
   const m = state.matches.find(x => x.id === id); if (!m) return;
   if (!confirm('Delete match "' + m.name + '"? This cannot be undone.')) return;
   await db.deleteMatch(id);
   if (state.activeMatchId === id) state.activeMatchId = null;
+  renderMatchPanel();
+  renderHistory();
+  renderAnalysis();
   toast('Match deleted.', 'success');
 }
 async function addPlayer(teamId) {
   const m = getActiveMatch(); if (!m) return;
   const t = m.teams[teamId]; if (!t) return;
+  if (!t.players) t.players = [];
   t.players.push({ key: 'guest-' + uid(), name: 'Player ' + (t.players.length + 1), member: null, runs: 0, balls: 0, fours: 0, sixes: 0, out: false });
+  m.updatedAt = Date.now();
+  await db.saveMatch(m);
+  renderLiveArea();
+}
+async function addBowler(teamId) {
+  const m = getActiveMatch(); if (!m) return;
+  const t = m.teams[teamId]; if (!t) return;
+  if (!t.bowlers) t.bowlers = [];
+  t.bowlers.push({ key: 'guest-bowl-' + uid(), name: 'Bowler ' + (t.bowlers.length + 1), member: null, balls: 0, overs: 0, runs: 0, wickets: 0 });
+  m.updatedAt = Date.now();
+  await db.saveMatch(m);
+  renderLiveArea();
+}
+async function removePlayer(teamId, idx) {
+  const m = getActiveMatch(); if (!m) return;
+  const t = m.teams[teamId]; if (!t || !t.players) return;
+  t.players.splice(idx, 1);
+  recomputeTeam(t);
   m.updatedAt = Date.now();
   await db.saveMatch(m);
   renderLiveArea();
@@ -724,31 +1019,50 @@ function updateBowlerLocal(el) {
   const m = getActiveMatch(); if (!m) return;
   const t = m.teams[el.dataset.team]; if (!t) return;
   const b = (t.bowlers || [])[+el.dataset.idx]; if (!b) return;
-  b[el.dataset.field] = Math.max(0, parseInt(el.value, 10) || 0);
-  const row = el.closest('.bowl-row');
-  const ov = row && row.querySelector('.b-overs');
-  if (ov) ov.textContent = fmtOvers(b.balls || 0) + ' ov';
+  if (el.dataset.field === 'overs') {
+    b.balls = parseOversToBalls(el.value);
+    b.overs = parseFloat(el.value) || 0;
+  } else {
+    b[el.dataset.field] = Math.max(0, parseInt(el.value, 10) || 0);
+  }
+  const card = el.closest('.bowl-detailed-card') || el.closest('.bowl-row');
+  if (card) {
+    const ov = card.querySelector('.b-overs');
+    if (ov) ov.textContent = fmtOvers(b.balls || 0) + ' ov';
+    const econ = card.querySelector('.bd-econ');
+    if (econ) econ.textContent = 'Econ: ' + (b.balls > 0 ? (b.runs / (b.balls / 6)).toFixed(1) : '0.0');
+  }
 }
 async function saveBowlerField(el) {
   const m = getActiveMatch(); if (!m) return;
   const t = m.teams[el.dataset.team]; if (!t) return;
   const b = (t.bowlers || [])[+el.dataset.idx]; if (!b) return;
-  b[el.dataset.field] = Math.max(0, parseInt(el.value, 10) || 0);
+  if (el.dataset.field === 'overs') {
+    b.balls = parseOversToBalls(el.value);
+    b.overs = parseFloat(el.value) || 0;
+  } else {
+    b[el.dataset.field] = Math.max(0, parseInt(el.value, 10) || 0);
+  }
   m.updatedAt = Date.now();
   await db.saveMatch(m);
 }
 
-/* ---------- 12. Scoring input handlers (Quick Mode) ---------- */
+/* ---------- 12. Scoring input handlers ---------- */
 function updateScoreLocal(el) {
   const m = getActiveMatch(); if (!m) return;
   const t = m.teams[el.dataset.team]; if (!t) return;
   const val = Math.max(0, parseInt(el.value, 10) || 0);
-  if (m.mode === 'quick') {
+  if (m.mode === 'quick' || m.mode === 'retro') {
     t[el.dataset.field] = val;
   } else {
-    const p = t.players[+el.dataset.idx]; if (!p) return;
+    const p = t.players && t.players[+el.dataset.idx]; if (!p) return;
     p[el.dataset.field] = val;
     recomputeTeam(t);
+    const card = el.closest('.player-detailed-card');
+    if (card) {
+      const sr = card.querySelector('.pd-sr');
+      if (sr) sr.textContent = 'SR: ' + (p.balls ? ((p.runs / p.balls) * 100).toFixed(1) : '0.0');
+    }
   }
   m.updatedAt = Date.now();
   updateTotalsEl(el.dataset.team);
@@ -757,32 +1071,50 @@ async function saveScoreField(el) {
   const m = getActiveMatch(); if (!m) return;
   const t = m.teams[el.dataset.team]; if (!t) return;
   const val = Math.max(0, parseInt(el.value, 10) || 0);
-  if (m.mode === 'quick') { t[el.dataset.field] = val; }
-  else { const p = t.players[+el.dataset.idx]; if (p) { p[el.dataset.field] = val; recomputeTeam(t); } }
+  if (m.mode === 'quick' || m.mode === 'retro') {
+    t[el.dataset.field] = val;
+  } else {
+    const p = t.players && t.players[+el.dataset.idx];
+    if (p) {
+      p[el.dataset.field] = val;
+      recomputeTeam(t);
+    }
+  }
   m.updatedAt = Date.now();
   await db.saveMatch(m);
 }
 async function toggleOut(el) {
   const m = getActiveMatch(); if (!m) return;
   const t = m.teams[el.dataset.team]; if (!t) return;
-  const p = t.players[+el.dataset.idx]; if (!p) return;
+  const p = t.players && t.players[+el.dataset.idx]; if (!p) return;
   p.out = el.checked;
   recomputeTeam(t);
   m.updatedAt = Date.now();
   await db.saveMatch(m);
   updateTotalsEl(el.dataset.team);
+
+  const card = el.closest('.player-detailed-card');
+  if (card) {
+    card.classList.toggle('is-dismissed', p.out);
+    const toggle = card.querySelector('.pd-status-toggle');
+    if (toggle) {
+      toggle.className = 'pd-status-toggle ' + (p.out ? 'is-out' : 'not-out');
+      const span = toggle.querySelector('span');
+      if (span) span.textContent = p.out ? '❌ Out (Dismissed)' : '🏏 Not Out';
+    }
+  }
 }
 async function renamePlayer(el) {
   const m = getActiveMatch(); if (!m) return;
   const t = m.teams[el.dataset.team]; if (!t) return;
-  const p = t.players[+el.dataset.idx]; if (!p) return;
+  const p = t.players && t.players[+el.dataset.idx]; if (!p) return;
   const name = (el.value || '').trim();
   if (name) { p.name = name; if (!p.member) p.key = name; }
   m.updatedAt = Date.now();
   await db.saveMatch(m);
 }
 
-/* ---------- 12. History ---------- */
+/* ---------- 12b. History ---------- */
 function renderHistory() {
   const el = document.getElementById('history-list');
   if (!state.matches.length) {
@@ -793,16 +1125,70 @@ function renderHistory() {
 }
 
 /* ---------- 13. Analysis (charts + awards) ---------- */
+function getMatchesForFilter(filter) {
+  if (filter === '__series__') {
+    return state.matches;
+  }
+  if (filter === '__this_week__') {
+    const now = new Date();
+    // Monday of the current calendar week
+    const d = new Date(now);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    const monday = new Date(d.setDate(diff));
+    monday.setHours(0, 0, 0, 0);
+    const mondayTs = monday.getTime();
+    // Also include matches within last 7 days for weekend safety
+    const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+    const threshold = Math.min(mondayTs, sevenDaysAgo);
+    return state.matches.filter(m => (m.createdAt || 0) >= threshold);
+  }
+  if (filter === '__last_match__') {
+    const completed = state.matches.filter(m => m.status === 'completed').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const last = completed[0] || state.matches[0];
+    return last ? [last] : [];
+  }
+  // Specific match ID
+  const single = state.matches.find(m => m.id === filter);
+  return single ? [single] : [];
+}
+
 function renderAnalysis() {
   const sel = document.getElementById('chart-select');
+  if (!sel) return;
   const prev = sel.value;
-  const options = [{ value: '__series__', label: 'Series Total (all matches)' }];
-  state.matches.forEach(m => options.push({ value: m.id, label: (m.status === 'live' ? '🔴 ' : '') + m.name }));
-  sel.innerHTML = options.map(o => '<option value="' + esc(o.value) + '">' + esc(o.label) + '</option>').join('');
-  if (prev && options.some(o => o.value === prev)) sel.value = prev;
+
+  // Chronologically sorted matches (oldest to newest)
+  const chronoMatches = state.matches.slice().sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+  let html = '';
+  html += '<optgroup label="Summary Totals">';
+  html += '<option value="__series__">🏆 Series Total (all matches combined)</option>';
+  html += '<option value="__this_week__">📅 This Week Match (current week)</option>';
+  html += '<option value="__last_match__">⚡ Last Match Total (most recently completed)</option>';
+  html += '</optgroup>';
+
+  if (chronoMatches.length > 0) {
+    html += '<optgroup label="Individual Matches (Chronological)">';
+    chronoMatches.forEach((m, idx) => {
+      const statusIcon = m.status === 'live' ? '🔴 LIVE: ' : '🏏 ';
+      const dateStr = fmtDate(m.createdAt);
+      html += '<option value="' + esc(m.id) + '">' + statusIcon + 'Match #' + (idx + 1) + ': ' + esc(m.name) + ' (' + dateStr + ')</option>';
+    });
+    html += '</optgroup>';
+  }
+
+  sel.innerHTML = html;
+  if (prev && (prev === '__series__' || prev === '__this_week__' || prev === '__last_match__' || chronoMatches.some(m => m.id === prev))) {
+    sel.value = prev;
+  } else {
+    sel.value = '__series__';
+  }
+
   renderCharts();
   renderAwards();
 }
+
 function drawPie(id, existing, labels, data, colors) {
   const ctx = document.getElementById(id);
   if (!ctx) return null;
@@ -811,85 +1197,176 @@ function drawPie(id, existing, labels, data, colors) {
     return null;
   }
   if (existing) { try { existing.destroy(); } catch (e) {} }
-  if (!data.length) {
+  if (!data.length || data.every(v => v === 0)) {
     return new Chart(ctx, {
       type: 'pie',
-      data: { labels: ['No data'], datasets: [{ data: [1], backgroundColor: ['rgba(255,255,255,0.08)'], borderColor: 'rgba(5,7,13,0.6)', borderWidth: 2 }] },
+      data: { labels: ['No data yet'], datasets: [{ data: [1], backgroundColor: ['rgba(255,255,255,0.08)'], borderColor: 'rgba(5,7,13,0.6)', borderWidth: 2 }] },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { enabled: false } } }
     });
   }
   return new Chart(ctx, {
     type: 'pie',
     data: { labels, datasets: [{ data, backgroundColor: colors, borderColor: 'rgba(5,7,13,0.6)', borderWidth: 2 }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#cbd5e1', font: { size: 12 } } } } }
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#cbd5e1', font: { size: 12 } } },
+        tooltip: {
+          callbacks: {
+            label: function(item) {
+              const total = item.dataset.data.reduce((a, b) => a + b, 0);
+              const val = item.raw || 0;
+              const pct = total ? Math.round((val / total) * 100) : 0;
+              return ' ' + item.label + ': ' + val + ' runs (' + pct + '%)';
+            }
+          }
+        }
+      }
+    }
   });
 }
+
 function renderCharts() {
-  const sel = document.getElementById('chart-select').value;
+  const selEl = document.getElementById('chart-select');
+  const sel = selEl ? selEl.value : '__series__';
+  const filteredMatches = getMatchesForFilter(sel);
 
-  // Team performance pie
-  let labels = [], data = [], colors = [];
-  if (sel === '__series__') {
-    Object.values(state.teams).forEach(t => {
-      labels.push(t.name);
-      data.push(state.matches.reduce((s, m) => s + (+(m.teams[t.id] && m.teams[t.id].runs) || 0), 0));
-      colors.push(t.color || '#3b82f6');
-    });
-  } else {
-    const m = state.matches.find(x => x.id === sel);
-    if (m) Object.keys(m.teams).forEach(id => {
-      const t = m.teams[id], meta = getTeam(id);
-      labels.push(meta.name); data.push(+t.runs || 0); colors.push(meta.color || '#3b82f6');
-    });
-  }
-  chartTeam = drawPie('pie-team', chartTeam, labels, data, colors);
+  // 1. Team Performance Pie Chart
+  const teamLabels = [];
+  const teamData = [];
+  const teamColors = [];
 
-  // Player run distribution pie (detailed matches only)
+  Object.values(state.teams).forEach(t => {
+    teamLabels.push(t.name);
+    const teamRuns = filteredMatches.reduce((sum, m) => {
+      const matchTeam = m.teams && m.teams[t.id];
+      return sum + (+(matchTeam && matchTeam.runs) || 0);
+    }, 0);
+    teamData.push(teamRuns);
+    teamColors.push(t.color || '#3b82f6');
+  });
+
+  chartTeam = drawPie('pie-team', chartTeam, teamLabels, teamData, teamColors);
+
+  // 2. Player Run Distribution Pie Chart
   const note = document.getElementById('player-chart-note');
-  const m = sel !== '__series__' ? state.matches.find(x => x.id === sel) : null;
-  if (m && m.mode === 'detailed') {
-    const pl = [], pd = [], pc = [];
-    Object.entries(m.teams).forEach(([tid, t]) => {
+  const playerMap = {};
+
+  filteredMatches.forEach(m => {
+    if (!isDetailedMatch(m)) return;
+    Object.entries(m.teams || {}).forEach(([tid, t]) => {
       const meta = getTeam(tid);
-      (t.players || []).forEach(p => { if (+p.runs || 0) { pl.push(playerLabel(p, tid)); pd.push(+p.runs || 0); pc.push(meta.color || '#3b82f6'); } });
+      (t.players || []).forEach(p => {
+        const runs = +p.runs || 0;
+        if (runs > 0) {
+          const key = p.member || p.name;
+          const label = playerLabel(p, tid);
+          if (!playerMap[key]) {
+            playerMap[key] = { label, runs: 0, color: meta.color || '#3b82f6' };
+          }
+          playerMap[key].runs += runs;
+        }
+      });
     });
-    chartPlayers = drawPie('pie-players', chartPlayers, pl, pd, pc);
-    note.textContent = pl.length ? 'Runs by player in this match.' : 'No runs scored yet in this match.';
-  } else {
-    chartPlayers = drawPie('pie-players', chartPlayers, [], [], []);
-    note.textContent = sel === '__series__' ? 'Select a detailed match to see player distribution.' : 'Player distribution only available for Detailed Mode matches.';
+  });
+
+  const playerEntries = Object.values(playerMap);
+  const pLabels = playerEntries.map(x => x.label);
+  const pData = playerEntries.map(x => x.runs);
+  const pColors = playerEntries.map(x => x.color);
+
+  chartPlayers = drawPie('pie-players', chartPlayers, pLabels, pData, pColors);
+
+  if (note) {
+    if (pLabels.length > 0) {
+      if (sel === '__series__') note.textContent = 'Series run distribution across all detailed & post-match games.';
+      else if (sel === '__this_week__') note.textContent = 'Player runs scored in this week’s matches.';
+      else if (sel === '__last_match__') note.textContent = 'Player runs scored in the most recent match.';
+      else note.textContent = 'Player runs scored in this selected match.';
+    } else {
+      if (filteredMatches.length === 0) {
+        note.textContent = 'No matches found for this filter.';
+      } else {
+        note.textContent = 'No individual player runs recorded for this view (play or log a Detailed match).';
+      }
+    }
   }
 }
-function computeAwards() {
-  const completed = state.matches.filter(m => m.status === 'completed');
+
+function computeAwards(matches) {
+  const completed = (matches || state.matches).filter(m => m.status === 'completed');
   const series = {};
   let bestPlayer = null; // most runs in a single innings
-  let mom = null;        // highest impact in a single match
+  let mom = null;        // highest total match impact
 
   completed.forEach(m => {
-    if (m.mode !== 'detailed') return;
+    if (!isDetailedMatch(m)) return;
     let matchTop = null;
-    Object.entries(m.teams).forEach(([tid, t]) => {
+
+    Object.entries(m.teams || {}).forEach(([tid, t]) => {
+      // Batter impact
       (t.players || []).forEach(p => {
         const runs = +p.runs || 0, fours = +p.fours || 0, sixes = +p.sixes || 0;
-        const impact = runs + fours + sixes * 2;
+        const impact = runs + fours + (sixes * 2);
         const key = p.member || p.name;
         const label = playerLabel(p, tid);
         if (!series[key]) series[key] = { key, label, teamId: tid, runs: 0, impact: 0, matches: 0 };
         const s = series[key];
-        s.runs += runs; s.impact += impact; s.matches += 1; s.label = label;
-        if (!bestPlayer || runs > bestPlayer.runs) bestPlayer = { label, runs, matchName: m.name };
-        if (!matchTop || impact > matchTop.impact) matchTop = { label, impact, matchName: m.name };
+        s.runs += runs;
+        s.impact += impact;
+        s.matches += 1;
+        s.label = label;
+
+        if (!bestPlayer || runs > bestPlayer.runs) {
+          bestPlayer = { label, runs, matchName: m.name };
+        }
+        if (!matchTop || impact > matchTop.impact) {
+          matchTop = { label, impact, matchName: m.name };
+        }
+      });
+
+      // Bowler impact
+      (t.bowlers || []).forEach(b => {
+        const wkts = +b.wickets || 0;
+        const runs = +b.runs || 0;
+        const balls = +b.balls || 0;
+        const bowlImpact = (wkts * 20) + Math.max(0, balls - runs);
+        const key = b.member || b.name;
+        const label = b.member ? displayNameOf(tid, b.member) : b.name;
+
+        if (series[key]) {
+          series[key].impact += bowlImpact;
+        }
+        if (bowlImpact > 0 && (!matchTop || bowlImpact > matchTop.impact)) {
+          matchTop = { label, impact: bowlImpact, matchName: m.name };
+        }
       });
     });
-    if (matchTop && (!mom || matchTop.impact > mom.impact)) mom = matchTop;
+
+    if (matchTop && (!mom || matchTop.impact > mom.impact)) {
+      mom = matchTop;
+    }
   });
 
   const pos = Object.values(series).reduce((acc, s) => (!acc || s.impact > acc.impact) ? s : acc, null);
   return { bestPlayer, mom, pos };
 }
+
 function renderAwards() {
-  const a = computeAwards();
+  const selEl = document.getElementById('chart-select');
+  const sel = selEl ? selEl.value : '__series__';
+  const filteredMatches = getMatchesForFilter(sel);
+  const a = computeAwards(filteredMatches.length ? filteredMatches : state.matches);
+
+  let titleSuffix = ' (Series Total)';
+  if (sel === '__this_week__') titleSuffix = ' (This Week)';
+  else if (sel === '__last_match__') titleSuffix = ' (Last Match)';
+  else if (sel !== '__series__') {
+    const single = state.matches.find(m => m.id === sel);
+    titleSuffix = single ? ' (' + single.name + ')' : '';
+  }
+
   const card = (emoji, title, name, sub, hl) =>
     '<div class="award' + (hl ? ' highlight' : '') + '">' +
       '<div class="a-emoji">' + emoji + '</div>' +
@@ -897,34 +1374,43 @@ function renderAwards() {
       '<div class="a-name">' + (name ? esc(name) : '—') + '</div>' +
       '<div class="a-sub">' + (sub ? esc(sub) : '') + '</div>' +
     '</div>';
+
   document.getElementById('awards').innerHTML =
-    '<h3 class="card-title">🏆 Automatic Awards</h3>' +
+    '<h3 class="card-title">🏆 Automatic Awards' + esc(titleSuffix) + '</h3>' +
     '<div class="award-grid">' +
-      card('🥇', 'Best Player', a.bestPlayer && a.bestPlayer.label, a.bestPlayer ? a.bestPlayer.runs + ' runs · ' + a.bestPlayer.matchName : 'No detailed matches yet', !!a.bestPlayer) +
-      card('🏅', 'Man of the Match', a.mom && a.mom.label, a.mom ? a.mom.impact + ' impact pts · ' + a.mom.matchName : 'No detailed matches yet', !!a.mom) +
-      card('👑', 'Player of the Series', a.pos && a.pos.label, a.pos ? a.pos.impact + ' impact pts · ' + a.pos.matches + ' match(es)' : 'No detailed matches yet', !!a.pos) +
+      card('🥇', 'Best Batter', a.bestPlayer && a.bestPlayer.label, a.bestPlayer ? a.bestPlayer.runs + ' runs · ' + a.bestPlayer.matchName : 'No detailed match logged yet', !!a.bestPlayer) +
+      card('🏅', 'Man of the Match', a.mom && a.mom.label, a.mom ? a.mom.impact + ' impact pts · ' + a.mom.matchName : 'No detailed match logged yet', !!a.mom) +
+      card('👑', sel === '__series__' ? 'Player of the Series' : 'Top Impact Player', a.pos && a.pos.label, a.pos ? a.pos.impact + ' impact pts · ' + a.pos.matches + ' match(es)' : 'No detailed match logged yet', !!a.pos) +
     '</div>';
 }
 
 /* ---------- 13b. Printable summary ---------- */
 function printMatchHTML(m) {
   const res = resultOf(m);
-  const ids = Object.keys(m.teams);
+  const ids = Object.keys(m.teams || {});
   let h = '<div style="page-break-inside:avoid;margin-bottom:18px">';
-  h += '<h3>' + esc(m.name) + ' <small>(' + fmtDate(m.createdAt) + ' · ' + (m.mode === 'quick' ? 'Quick' : 'Detailed') + (m.status === 'live' ? ' · LIVE' : '') + ')</small></h3>';
+  h += '<h3>' + esc(m.name) + ' <small>(' + fmtDate(m.createdAt) + ' · ' + modeLabel(m.mode) + (m.status === 'live' ? ' · LIVE' : '') + ')</small></h3>';
   if (res) h += '<p style="margin:2px 0 8px"><strong>' + (res.draw ? 'Result: Draw' : 'Winner: ' + esc(res.winnerName)) + '</strong></p>';
   ids.forEach(id => {
-    const t = m.teams[id], meta = getTeam(id);
-    h += '<h4>' + esc(meta.name) + ' — ' + (t.runs || 0) + '/' + (t.wickets || 0) + (m.mode === 'detailed' ? ' (' + fmtOvers(totalBalls(t)) + ' ov)' : '') + '</h4>';
-    if (m.mode === 'detailed') {
+    const t = m.teams[id] || {}, meta = getTeam(id);
+    const hasDetailed = isDetailedMatch(m);
+    h += '<h4>' + esc(meta.name) + ' — ' + (t.runs || 0) + '/' + (t.wickets || 0) + '</h4>';
+    if (hasDetailed) {
       if (t.players && t.players.length) {
-        h += '<table><tr><th>Batter</th><th>Runs</th><th>Balls</th><th>4s</th><th>6s</th><th>Status</th></tr>';
-        t.players.forEach(p => h += '<tr><td>' + esc(playerLabel(p, id)) + '</td><td>' + (p.runs || 0) + '</td><td>' + (p.balls || 0) + '</td><td>' + (p.fours || 0) + '</td><td>' + (p.sixes || 0) + '</td><td>' + (p.out ? 'Out' : 'Not out') + '</td></tr>');
+        h += '<table><tr><th>Batter</th><th>Runs</th><th>Balls</th><th>4s</th><th>6s</th><th>SR</th><th>Status</th></tr>';
+        t.players.forEach(p => {
+          const sr = p.balls ? ((p.runs / p.balls) * 100).toFixed(1) : '0.0';
+          h += '<tr><td>' + esc(playerLabel(p, id)) + '</td><td>' + (p.runs || 0) + '</td><td>' + (p.balls || 0) + '</td><td>' + (p.fours || 0) + '</td><td>' + (p.sixes || 0) + '</td><td>' + sr + '</td><td>' + (p.out ? 'Out' : 'Not out') + '</td></tr>';
+        });
         h += '</table>';
       }
       if (t.bowlers && t.bowlers.length) {
-        h += '<table><tr><th>Bowler</th><th>Overs</th><th>Runs</th><th>Wickets</th></tr>';
-        t.bowlers.forEach(b => h += '<tr><td>' + esc(b.member ? displayNameOf(id, b.member) : b.name) + '</td><td>' + fmtOvers(b.balls || 0) + '</td><td>' + (b.runs || 0) + '</td><td>' + (b.wickets || 0) + '</td></tr>');
+        h += '<table><tr><th>Bowler</th><th>Overs</th><th>Runs</th><th>Wickets</th><th>Econ</th></tr>';
+        t.bowlers.forEach(b => {
+          const balls = b.balls || 0;
+          const econ = balls > 0 ? (b.runs / (balls / 6)).toFixed(1) : '0.0';
+          h += '<tr><td>' + esc(b.member ? displayNameOf(id, b.member) : b.name) + '</td><td>' + fmtOvers(balls) + '</td><td>' + (b.runs || 0) + '</td><td>' + (b.wickets || 0) + '</td><td>' + econ + '</td></tr>';
+        });
         h += '</table>';
       }
     }
@@ -940,7 +1426,7 @@ function buildPrintSummary() {
   h += '<h2>Team Totals</h2>';
   h += '<table><tr><th>Team</th><th>Matches</th><th>Runs</th><th>Wickets</th></tr>';
   Object.values(state.teams).forEach(t => {
-    const ms = state.matches.filter(m => m.teams[t.id]);
+    const ms = state.matches.filter(m => m.teams && m.teams[t.id]);
     const runs = ms.reduce((s, m) => s + ((m.teams[t.id] && m.teams[t.id].runs) || 0), 0);
     const wkts = ms.reduce((s, m) => s + ((m.teams[t.id] && m.teams[t.id].wickets) || 0), 0);
     h += '<tr><td>' + esc(t.name) + '</td><td>' + ms.length + '</td><td>' + runs + '</td><td>' + wkts + '</td></tr>';
@@ -952,7 +1438,7 @@ function buildPrintSummary() {
   h += '<h2>Awards</h2>';
   h += '<table><tr><th>Award</th><th>Player</th><th>Detail</th></tr>';
   [
-    ['Best Player', awards.bestPlayer, awards.bestPlayer ? awards.bestPlayer.runs + ' runs · ' + awards.bestPlayer.matchName : '—'],
+    ['Best Batter', awards.bestPlayer, awards.bestPlayer ? awards.bestPlayer.runs + ' runs · ' + awards.bestPlayer.matchName : '—'],
     ['Man of the Match', awards.mom, awards.mom ? awards.mom.impact + ' impact pts · ' + awards.mom.matchName : '—'],
     ['Player of the Series', awards.pos, awards.pos ? awards.pos.impact + ' impact pts · ' + awards.pos.matches + ' match(es)' : '—']
   ].forEach(r => h += '<tr><td>' + r[0] + '</td><td>' + (r[1] ? esc(r[1].label) : '—') + '</td><td>' + esc(r[2]) + '</td></tr>');
@@ -1057,8 +1543,11 @@ function globalClick(e) {
   switch (el.dataset.action) {
     case 'open-match': state.activeMatchId = el.dataset.id; renderLiveArea(); showSection('scoreboard-section'); break;
     case 'end-match': endMatch(el.dataset.id); break;
+    case 'reopen-match': reopenMatch(el.dataset.id); break;
     case 'delete-match': deleteMatch(el.dataset.id); break;
     case 'add-player': addPlayer(el.dataset.team); break;
+    case 'add-bowler': addBowler(el.dataset.team); break;
+    case 'remove-player': removePlayer(el.dataset.team, +el.dataset.idx); break;
     case 'vote-yes': voteYes(); break;
     case 'go-match': showSection('match-setup-section'); break;
     case 'ball': applyBall(el.dataset.team, +el.dataset.runs); break;
@@ -1091,8 +1580,10 @@ function globalChange(e) {
 }
 
 /* ---------- 16. Init ---------- */
-function init() {
-  const mode = db.init();
+async function init() {
+  populateLoginSelect();
+  renderSyncStatus();
+  const mode = await db.init();
   console.log('[Thursday Cricket] data mode:', mode);
   populateLoginSelect();
   renderSyncStatus();
@@ -1111,7 +1602,10 @@ function init() {
     const b = e.target.closest('.nav-btn');
     if (b) showSection(b.dataset.section);
   });
-  document.getElementById('chart-select').addEventListener('change', renderCharts);
+  document.getElementById('chart-select').addEventListener('change', () => {
+    renderCharts();
+    renderAwards();
+  });
   document.getElementById('print-btn').addEventListener('click', buildPrintSummary);
 
   document.addEventListener('click', globalClick);
@@ -1121,7 +1615,6 @@ function init() {
 
   window.addEventListener('unhandledrejection', e => {
     console.error('[Thursday Cricket] Unhandled promise rejection:', e.reason);
-    toast('⚠️ Something went wrong. Check your connection and try again.', 'error');
   });
 
   const saved = restoreUser();
@@ -1137,3 +1630,4 @@ function init() {
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
 else init();
+

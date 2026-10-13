@@ -47,20 +47,40 @@
 
     <!-- ============ TOP BAR ============ -->
     <header id="topbar" class="topbar glass hidden">
-      <div class="brand-mini">🏏 Thursday Cricket</div>
+      <div class="brand-mini">🏏 <span>Thursday Cricket</span></div>
       <nav class="nav" id="main-nav">
-        <button data-section="dashboard-section" class="nav-btn is-active">Home</button>
-        <button data-section="match-setup-section" class="nav-btn">Start New Match</button>
-        <button data-section="scoreboard-section" class="nav-btn">Live Scoreboard</button>
-        <button data-section="analysis-section" class="nav-btn">Match Analysis</button>
-        <button data-section="settings-section" class="nav-btn">Settings &amp; Voting</button>
+        <button data-section="dashboard-section" class="nav-btn is-active" title="Dashboard">
+          <span class="nav-icon">🏠</span>
+          <span class="nav-text">Home</span>
+        </button>
+        <button data-section="match-setup-section" class="nav-btn" title="Start Match">
+          <span class="nav-icon">🏏</span>
+          <span class="nav-text">Match</span>
+        </button>
+        <button data-section="scoreboard-section" class="nav-btn" title="Live & Post-Match Scoreboard">
+          <span class="nav-icon">📡</span>
+          <span class="nav-text">Scoreboard</span>
+        </button>
+        <button data-section="analysis-section" class="nav-btn" title="Analysis & Awards">
+          <span class="nav-icon">📊</span>
+          <span class="nav-text">Analysis</span>
+        </button>
+        <button data-section="settings-section" class="nav-btn" title="Team Settings">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-text">Settings</span>
+        </button>
       </nav>
       <div class="topbar-right">
         <span id="sync-status" class="sync-status local" title="Sync mode"></span>
         <span id="whoami" class="whoami"></span>
-        <button id="logout-btn" class="btn btn-ghost btn-sm" type="button">Logout</button>
+        <button id="logout-btn" class="btn btn-ghost btn-sm" type="button" title="Sign out">
+          <span class="btn-icon">🚪</span>
+          <span class="btn-text">Logout</span>
+        </button>
       </div>
     </header>
+
+    <div id="sync-error" class="sync-error hidden">⚠️ Can't reach Firestore — deploy <code>firestore.rules</code> and enable the <strong>Anonymous</strong> auth provider.</div>
 
     <main class="content">
 
@@ -137,6 +157,7 @@
 
   <!-- CDN libraries (order matters) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="app.js"></script>

@@ -1,0 +1,54 @@
+rules_version = '2';
+
+// ============================================================================
+// Thursday Cricket — Firestore Security Rules
+// ----------------------------------------------------------------------------
+// The app signs users in anonymously via Firebase Authentication on startup
+// (see app.js), so every request carries a valid auth token. These rules
+// require that token (request.auth != null), which blocks raw unauthenticated
+// access to the database across all collections:
+//   - /teams
+//   - /matches
+//   - /teamVotes
+//   - /players
+//
+// Deploy with Firebase CLI:
+//     firebase deploy --only firestore:rules
+// or paste into: Firebase Console -> Firestore Database -> Rules -> Publish.
+// ============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: caller must carry an active Firebase Auth token.
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Teams (roster, display name, secret code).
+    match /teams/{teamId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Matches — live scoring, quick totals, retro & post-match detailed scorecards.
+    match /matches/{matchId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Team secret-code votes.
+    match /teamVotes/{teamId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Player profiles & display-name overrides.
+    match /players/{playerId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Default deny for any unspecified path.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
