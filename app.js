@@ -69,8 +69,30 @@ const LS = {
   teams: 'cricscore_teams',
   matches: 'cricscore_matches',
   votes: 'cricscore_votes',
-  players: 'cricscore_players'
+  players: 'cricscore_players',
+  theme: 'cricscore_theme'
 };
+
+const THEMES = [
+  { id: 'default', name: 'Default Glass Dark', icon: '🌌', desc: 'Deep black with vibrant blue/cyan glass accents', primary: '#3b82f6', accent: '#22d3ee' },
+  { id: 'cyberpunk', name: 'Neon Cyberpunk', icon: '⚡', desc: 'Deep obsidian with electric purple & hot pink', primary: '#a855f7', accent: '#ec4899' },
+  { id: 'emerald', name: 'Emerald Pitch', icon: '🌿', desc: 'Forest dark with vibrant cricket-pitch glow', primary: '#10b981', accent: '#34d399' },
+  { id: 'sunset', name: 'Royal Sunset', icon: '🌅', desc: 'Midnight navy with warm gold & amber gradients', primary: '#f59e0b', accent: '#f97316' }
+];
+
+function getSavedTheme() {
+  try { return localStorage.getItem(LS.theme) || 'default'; }
+  catch (e) { return 'default'; }
+}
+
+function applyTheme(themeId) {
+  const chosen = THEMES.some(t => t.id === themeId) ? themeId : 'default';
+  document.documentElement.dataset.theme = chosen;
+  try { localStorage.setItem(LS.theme, chosen); } catch (e) {}
+}
+
+// Apply saved theme immediately on evaluation
+applyTheme(getSavedTheme());
 
 /* ---------- 3. Global state ---------- */
 const state = {
@@ -537,10 +559,15 @@ function renderDashboard() {
   document.getElementById('dash-name').textContent = u.displayName;
   const team = getTeam(u.teamId);
 
+  const captainName = team.captain ? displayNameOf(team.id, team.captain) : 'Not elected yet (Vote in Settings)';
   document.getElementById('dash-team-card').innerHTML =
     '<h3 class="card-title">Your Team</h3>' +
-    '<div class="row"><span class="badge badge-live" style="background:' + team.color + '33;color:' + team.color + '">' + esc(team.name) + '</span></div>' +
-    '<p class="muted mt" style="font-size:.85rem">Members: ' + team.members.map(m => esc(displayNameOf(team.id, m))).join(', ') + '</p>' +
+    '<div class="row">' +
+      '<span class="badge badge-live" style="background:' + team.color + '33;color:' + team.color + '">' + esc(team.name) + '</span>' +
+      (team.captain ? '<span class="badge badge-captain">👑 ' + esc(captainName) + ' (Captain)</span>' : '') +
+    '</div>' +
+    '<p class="mt" style="font-size:.88rem">👑 <strong>Active Captain:</strong> <span class="accent">' + esc(captainName) + '</span></p>' +
+    '<p class="muted mt" style="font-size:.85rem">Members: ' + team.members.map(m => esc(displayNameOf(team.id, m)) + (m === team.captain ? ' (C)' : '')).join(', ') + '</p>' +
     '<p class="muted" style="font-size:.85rem">Secret code: <code>' + esc(team.secretCode) + '</code></p>';
 
   const live = state.matches.filter(m => m.status === 'live');
@@ -670,10 +697,14 @@ function teamCardHTML(tid, t, meta, mode, isYou) {
       const oversVal = fmtOvers(balls);
       const econ = balls > 0 ? (b.runs / (balls / 6)).toFixed(1) : '0.0';
 
+      const nameHtml = b.member
+        ? '<div class="bd-name">' + esc(bLabel) + '</div>'
+        : '<div class="row" style="flex:1"><input type="text" value="' + esc(b.name) + '" data-rename-bowler data-team="' + tid + '" data-idx="' + i + '" class="p-name-input" placeholder="Bowler name" /><button type="button" class="btn btn-sm btn-ghost" data-action="remove-bowler" data-team="' + tid + '" data-idx="' + i + '" title="Remove">✕</button></div>';
+
       return '' +
         '<div class="bowl-detailed-card">' +
           '<div class="bd-header">' +
-            '<div class="bd-name">' + esc(bLabel) + '</div>' +
+            nameHtml +
             '<div class="bd-econ">Econ: ' + econ + '</div>' +
           '</div>' +
           '<div class="bd-inputs">' +
@@ -788,8 +819,10 @@ function recomputeTeam(t) {
 function updateTotalsEl(teamId) {
   const m = getActiveMatch(); if (!m) return;
   const t = m.teams[teamId]; if (!t) return;
-  const el = document.getElementById('totals-' + teamId);
-  if (el) el.innerHTML = '<span class="score-big">' + (t.runs || 0) + '</span><span class="score-meta">/ ' + (t.wickets || 0) + ' wickets</span>';
+  const totals = document.getElementById('totals-' + teamId);
+  if (totals) totals.textContent = t.runs || 0;
+  const wkts = document.getElementById('wkts-' + teamId);
+  if (wkts) wkts.textContent = t.wickets || 0;
 }
 
 function startMatch() {
@@ -883,6 +916,23 @@ async function removePlayer(teamId, idx) {
   m.updatedAt = Date.now();
   await db.saveMatch(m);
   renderLiveArea();
+}
+async function removeBowler(teamId, idx) {
+  const m = getActiveMatch(); if (!m) return;
+  const t = m.teams[teamId]; if (!t || !t.bowlers) return;
+  t.bowlers.splice(idx, 1);
+  m.updatedAt = Date.now();
+  await db.saveMatch(m);
+  renderLiveArea();
+}
+async function renameBowler(el) {
+  const m = getActiveMatch(); if (!m) return;
+  const t = m.teams[el.dataset.team]; if (!t) return;
+  const b = t.bowlers && t.bowlers[+el.dataset.idx]; if (!b) return;
+  const name = (el.value || '').trim();
+  if (name) { b.name = name; if (!b.member) b.key = name; }
+  m.updatedAt = Date.now();
+  await db.saveMatch(m);
 }
 
 /* ---------- 11. Ball-by-ball scoring (Detailed Mode) ---------- */
@@ -1295,34 +1345,62 @@ function renderCharts() {
 }
 
 function computeAwards(matches) {
-  const completed = (matches || state.matches).filter(m => m.status === 'completed');
-  const series = {};
-  let bestPlayer = null; // most runs in a single innings
-  let mom = null;        // highest total match impact
+  let targetMatches = matches || state.matches;
+  if (!matches) {
+    const completed = state.matches.filter(m => m.status === 'completed');
+    targetMatches = completed.length ? completed : state.matches;
+  }
+  let evalMatches = targetMatches.filter(m => m.status === 'completed');
+  if (!evalMatches.length) evalMatches = targetMatches; // fallback so live or in-progress matches also compute
 
-  completed.forEach(m => {
+  const series = {};
+  const bowlerStats = {};
+  let bestPlayer = null; // most runs
+  let bestBowler = null; // most wickets (tie breaker: lowest runs, lowest economy)
+  let mom = null;        // highest total match impact in a single match
+
+  evalMatches.forEach(m => {
     if (!isDetailedMatch(m)) return;
     let matchTop = null;
 
     Object.entries(m.teams || {}).forEach(([tid, t]) => {
       // Batter impact
       (t.players || []).forEach(p => {
-        const runs = +p.runs || 0, fours = +p.fours || 0, sixes = +p.sixes || 0;
+        const runs = +p.runs || 0;
+        const balls = +p.balls || 0;
+        const fours = +p.fours || 0;
+        const sixes = +p.sixes || 0;
         const impact = runs + fours + (sixes * 2);
         const key = p.member || p.name;
         const label = playerLabel(p, tid);
-        if (!series[key]) series[key] = { key, label, teamId: tid, runs: 0, impact: 0, matches: 0 };
+
+        if (!series[key]) {
+          series[key] = { key, label, teamId: tid, runs: 0, balls: 0, fours: 0, sixes: 0, wickets: 0, bowlRuns: 0, bowlBalls: 0, impact: 0, matches: 0 };
+        }
         const s = series[key];
         s.runs += runs;
+        s.balls += balls;
+        s.fours += fours;
+        s.sixes += sixes;
         s.impact += impact;
         s.matches += 1;
         s.label = label;
 
-        if (!bestPlayer || runs > bestPlayer.runs) {
-          bestPlayer = { label, runs, matchName: m.name };
+        if (!bestPlayer || runs > bestPlayer.runs || (runs === bestPlayer.runs && balls < (bestPlayer.balls || Infinity))) {
+          bestPlayer = {
+            key,
+            label,
+            runs,
+            balls,
+            fours,
+            sixes,
+            matchName: m.name,
+            sr: balls ? ((runs / balls) * 100).toFixed(1) : '0.0'
+          };
         }
+
         if (!matchTop || impact > matchTop.impact) {
-          matchTop = { label, impact, matchName: m.name };
+          matchTop = { label, impact, matchName: m.name, detail: runs + ' runs (' + balls + 'b)' };
         }
       });
 
@@ -1337,9 +1415,30 @@ function computeAwards(matches) {
 
         if (series[key]) {
           series[key].impact += bowlImpact;
+          series[key].wickets += wkts;
+          series[key].bowlRuns += runs;
+          series[key].bowlBalls += balls;
         }
-        if (bowlImpact > 0 && (!matchTop || bowlImpact > matchTop.impact)) {
-          matchTop = { label, impact: bowlImpact, matchName: m.name };
+
+        if (!bowlerStats[key]) {
+          bowlerStats[key] = { key, label, teamId: tid, wickets: 0, runs: 0, balls: 0, matches: 0, matchName: m.name };
+        }
+        const bs = bowlerStats[key];
+        bs.wickets += wkts;
+        bs.runs += runs;
+        bs.balls += balls;
+        bs.matches += 1;
+        bs.label = label;
+        bs.matchName = m.name;
+
+        const combinedImpact = (matchTop && matchTop.label === label) ? (matchTop.impact + bowlImpact) : bowlImpact;
+        if (bowlImpact > 0 && (!matchTop || combinedImpact > matchTop.impact)) {
+          matchTop = {
+            label,
+            impact: combinedImpact,
+            matchName: m.name,
+            detail: wkts + ' wkts, ' + runs + ' runs (' + fmtOvers(balls) + ' ov)'
+          };
         }
       });
     });
@@ -1349,8 +1448,34 @@ function computeAwards(matches) {
     }
   });
 
+  // Calculate Best Wicket-Taker
+  const allBowlers = Object.values(bowlerStats).filter(b => b.wickets > 0 || b.balls > 0);
+  allBowlers.sort((a, b) => {
+    if (b.wickets !== a.wickets) return b.wickets - a.wickets;
+    if (a.runs !== b.runs) return a.runs - b.runs;
+    const econA = a.balls > 0 ? (a.runs / (a.balls / 6)) : 999;
+    const econB = b.balls > 0 ? (b.runs / (b.balls / 6)) : 999;
+    return econA - econB;
+  });
+
+  if (allBowlers.length > 0 && (allBowlers[0].wickets > 0 || allBowlers[0].balls > 0)) {
+    const topB = allBowlers[0];
+    const econ = topB.balls > 0 ? (topB.runs / (topB.balls / 6)).toFixed(1) : '0.0';
+    bestBowler = {
+      key: topB.key,
+      label: topB.label,
+      wickets: topB.wickets,
+      runs: topB.runs,
+      balls: topB.balls,
+      overs: fmtOvers(topB.balls),
+      economy: econ,
+      matches: topB.matches,
+      matchName: topB.matchName
+    };
+  }
+
   const pos = Object.values(series).reduce((acc, s) => (!acc || s.impact > acc.impact) ? s : acc, null);
-  return { bestPlayer, mom, pos };
+  return { bestPlayer, bestBowler, mom, pos };
 }
 
 function renderAwards() {
@@ -1360,11 +1485,15 @@ function renderAwards() {
   const a = computeAwards(filteredMatches.length ? filteredMatches : state.matches);
 
   let titleSuffix = ' (Series Total)';
+  let isSingle = false;
   if (sel === '__this_week__') titleSuffix = ' (This Week)';
   else if (sel === '__last_match__') titleSuffix = ' (Last Match)';
   else if (sel !== '__series__') {
     const single = state.matches.find(m => m.id === sel);
-    titleSuffix = single ? ' (' + single.name + ')' : '';
+    if (single) {
+      isSingle = true;
+      titleSuffix = ' (' + single.name + ')';
+    }
   }
 
   const card = (emoji, title, name, sub, hl) =>
@@ -1372,82 +1501,211 @@ function renderAwards() {
       '<div class="a-emoji">' + emoji + '</div>' +
       '<div class="a-title">' + title + '</div>' +
       '<div class="a-name">' + (name ? esc(name) : '—') + '</div>' +
-      '<div class="a-sub">' + (sub ? esc(sub) : '') + '</div>' +
+      '<div class="a-sub">' + (sub ? esc(sub) : 'No detailed match logged yet') + '</div>' +
     '</div>';
+
+  const batterSub = a.bestPlayer
+    ? (a.bestPlayer.runs + ' runs (' + a.bestPlayer.balls + 'b, SR ' + a.bestPlayer.sr + ')' + (!isSingle ? ' · ' + a.bestPlayer.matchName : ''))
+    : null;
+
+  const bowlerSub = a.bestBowler
+    ? (a.bestBowler.wickets + ' wkts · ' + a.bestBowler.overs + ' ov · Econ ' + a.bestBowler.economy + (!isSingle ? ' · ' + a.bestBowler.matchName : ''))
+    : null;
+
+  const momSub = a.mom
+    ? (a.mom.impact + ' impact pts' + (a.mom.detail ? ' (' + a.mom.detail + ')' : '') + (!isSingle ? ' · ' + a.mom.matchName : ''))
+    : null;
+
+  const posTitle = isSingle ? 'Top Match Performer' : (sel === '__series__' ? 'Player of the Series' : 'Top Impact Player');
+  const posSub = a.pos
+    ? (a.pos.impact + ' impact pts' + (isSingle ? '' : ' · ' + a.pos.matches + ' match(es)'))
+    : null;
 
   document.getElementById('awards').innerHTML =
     '<h3 class="card-title">🏆 Automatic Awards' + esc(titleSuffix) + '</h3>' +
     '<div class="award-grid">' +
-      card('🥇', 'Best Batter', a.bestPlayer && a.bestPlayer.label, a.bestPlayer ? a.bestPlayer.runs + ' runs · ' + a.bestPlayer.matchName : 'No detailed match logged yet', !!a.bestPlayer) +
-      card('🏅', 'Man of the Match', a.mom && a.mom.label, a.mom ? a.mom.impact + ' impact pts · ' + a.mom.matchName : 'No detailed match logged yet', !!a.mom) +
-      card('👑', sel === '__series__' ? 'Player of the Series' : 'Top Impact Player', a.pos && a.pos.label, a.pos ? a.pos.impact + ' impact pts · ' + a.pos.matches + ' match(es)' : 'No detailed match logged yet', !!a.pos) +
+      card('🥇', 'Best Batter', a.bestPlayer && a.bestPlayer.label, batterSub, !!a.bestPlayer) +
+      card('🎯', 'Best Wicket-Taker', a.bestBowler && a.bestBowler.label, bowlerSub, !!a.bestBowler) +
+      card('🏅', 'Man of the Match', a.mom && a.mom.label, momSub, !!a.mom) +
+      card('👑', posTitle, a.pos && a.pos.label, posSub, !!a.pos) +
     '</div>';
 }
 
 /* ---------- 13b. Printable summary ---------- */
-function printMatchHTML(m) {
+function printMatchHTML(m, matchNum) {
   const res = resultOf(m);
   const ids = Object.keys(m.teams || {});
-  let h = '<div style="page-break-inside:avoid;margin-bottom:18px">';
-  h += '<h3>' + esc(m.name) + ' <small>(' + fmtDate(m.createdAt) + ' · ' + modeLabel(m.mode) + (m.status === 'live' ? ' · LIVE' : '') + ')</small></h3>';
-  if (res) h += '<p style="margin:2px 0 8px"><strong>' + (res.draw ? 'Result: Draw' : 'Winner: ' + esc(res.winnerName)) + '</strong></p>';
+  const hasDetailed = isDetailedMatch(m);
+
+  let resultClass = 'print-result-win';
+  let resultText = res && res.draw ? 'Draw' : (res ? 'Winner: ' + res.winnerName : 'In Progress');
+  if (m.status === 'live') {
+    resultClass = 'print-result-live';
+    resultText = '🔴 LIVE SCOREBOARD';
+  } else if (res && res.draw) {
+    resultClass = 'print-result-draw';
+  }
+
+  let h = '<div class="print-match-card">';
+  h += '  <div class="print-match-header">';
+  h += '    <div>';
+  h += '      <div class="print-match-title">' + (matchNum ? 'Match #' + matchNum + ': ' : '') + esc(m.name) + '</div>';
+  h += '      <div style="font-size:10.5px;color:#64748b">' + fmtDate(m.createdAt) + ' · ' + modeLabel(m.mode) + '</div>';
+  h += '    </div>';
+  h += '    <div class="print-match-result ' + resultClass + '">' + esc(resultText) + '</div>';
+  h += '  </div>';
+
+  h += '  <div class="print-teams-row">';
   ids.forEach(id => {
     const t = m.teams[id] || {}, meta = getTeam(id);
-    const hasDetailed = isDetailedMatch(m);
-    h += '<h4>' + esc(meta.name) + ' — ' + (t.runs || 0) + '/' + (t.wickets || 0) + '</h4>';
-    if (hasDetailed) {
+    const balls = totalBalls(t);
+    const oversText = hasDetailed && balls > 0 ? ' (' + fmtOvers(balls) + ' ov)' : '';
+    h += '<div class="print-team-box" style="border-left-color:' + (meta.color || '#0284c7') + '">';
+    h += '  <div class="print-tb-title">' + esc(meta.name) + '</div>';
+    h += '  <div class="print-tb-score">' + (t.runs || 0) + '/' + (t.wickets || 0) + oversText + '</div>';
+    h += '</div>';
+  });
+  h += '  </div>';
+
+  if (hasDetailed) {
+    ids.forEach(id => {
+      const t = m.teams[id] || {}, meta = getTeam(id);
       if (t.players && t.players.length) {
-        h += '<table><tr><th>Batter</th><th>Runs</th><th>Balls</th><th>4s</th><th>6s</th><th>SR</th><th>Status</th></tr>';
+        h += '<div style="font-weight:700;font-size:11.5px;color:#1e3a8a;margin-top:8px">🏏 ' + esc(meta.name) + ' — Batting Scorecard</div>';
+        h += '<table class="print-table"><thead><tr><th>Batter</th><th>Runs</th><th>Balls</th><th>4s</th><th>6s</th><th>SR</th><th>Dismissal</th></tr></thead><tbody>';
         t.players.forEach(p => {
           const sr = p.balls ? ((p.runs / p.balls) * 100).toFixed(1) : '0.0';
-          h += '<tr><td>' + esc(playerLabel(p, id)) + '</td><td>' + (p.runs || 0) + '</td><td>' + (p.balls || 0) + '</td><td>' + (p.fours || 0) + '</td><td>' + (p.sixes || 0) + '</td><td>' + sr + '</td><td>' + (p.out ? 'Out' : 'Not out') + '</td></tr>';
+          const statusSpan = p.out ? '<span class="print-badge-out">Out</span>' : '<span class="print-badge-notout">Not Out</span>';
+          h += '<tr>';
+          h += '  <td><strong>' + esc(playerLabel(p, id)) + '</strong></td>';
+          h += '  <td><strong>' + (p.runs || 0) + '</strong></td>';
+          h += '  <td>' + (p.balls || 0) + '</td>';
+          h += '  <td>' + (p.fours || 0) + '</td>';
+          h += '  <td>' + (p.sixes || 0) + '</td>';
+          h += '  <td>' + sr + '</td>';
+          h += '  <td>' + statusSpan + '</td>';
+          h += '</tr>';
         });
-        h += '</table>';
+        h += '</tbody></table>';
       }
+
       if (t.bowlers && t.bowlers.length) {
-        h += '<table><tr><th>Bowler</th><th>Overs</th><th>Runs</th><th>Wickets</th><th>Econ</th></tr>';
+        h += '<div style="font-weight:700;font-size:11.5px;color:#1e3a8a;margin-top:6px">🎯 ' + esc(meta.name) + ' — Bowling Figures</div>';
+        h += '<table class="print-table"><thead><tr><th>Bowler</th><th>Overs</th><th>Runs Conceded</th><th>Wickets</th><th>Economy</th></tr></thead><tbody>';
         t.bowlers.forEach(b => {
-          const balls = b.balls || 0;
-          const econ = balls > 0 ? (b.runs / (balls / 6)).toFixed(1) : '0.0';
-          h += '<tr><td>' + esc(b.member ? displayNameOf(id, b.member) : b.name) + '</td><td>' + fmtOvers(balls) + '</td><td>' + (b.runs || 0) + '</td><td>' + (b.wickets || 0) + '</td><td>' + econ + '</td></tr>';
+          const bBalls = b.balls || 0;
+          const econ = bBalls > 0 ? (b.runs / (bBalls / 6)).toFixed(1) : '0.0';
+          const bName = b.member ? displayNameOf(id, b.member) : b.name;
+          h += '<tr>';
+          h += '  <td><strong>' + esc(bName) + '</strong></td>';
+          h += '  <td>' + fmtOvers(bBalls) + '</td>';
+          h += '  <td>' + (b.runs || 0) + '</td>';
+          h += '  <td><strong>' + (b.wickets || 0) + '</strong></td>';
+          h += '  <td>' + econ + '</td>';
+          h += '</tr>';
         });
-        h += '</table>';
+        h += '</tbody></table>';
       }
-    }
-  });
+    });
+  }
+
   h += '</div>';
   return h;
 }
+
 function buildPrintSummary() {
-  const awards = computeAwards();
+  const selEl = document.getElementById('chart-select');
+  const sel = selEl ? selEl.value : '__series__';
+  const filteredMatches = getMatchesForFilter(sel);
+  const targetMatches = filteredMatches.length ? filteredMatches : state.matches;
+  const awards = computeAwards(targetMatches);
   const u = state.user;
-  let h = '<h1>Thursday Cricket — Match Summary</h1>';
-  h += '<p class="print-meta">' + new Date().toLocaleString() + (u ? ' · Prepared by ' + esc(u.displayName) : '') + '</p>';
-  h += '<h2>Team Totals</h2>';
-  h += '<table><tr><th>Team</th><th>Matches</th><th>Runs</th><th>Wickets</th></tr>';
+
+  let reportScope = 'Full Series Report (' + state.matches.length + ' matches)';
+  if (sel === '__this_week__') reportScope = 'This Week (' + targetMatches.length + ' matches)';
+  else if (sel === '__last_match__') reportScope = 'Last Completed Match';
+  else if (sel !== '__series__') {
+    const single = state.matches.find(m => m.id === sel);
+    if (single) reportScope = 'Single Match Report (' + single.name + ')';
+  }
+
+  let h = '';
+  // Header Banner
+  h += '<div class="print-header">';
+  h += '  <div class="print-header-top">';
+  h += '    <h1>🏏 Thursday Cricket Official Match Report</h1>';
+  h += '  </div>';
+  h += '  <div class="print-sub">Official Squad Scorecard, Ball-by-Ball Analysis &amp; Series Leaderboard</div>';
+  h += '  <div class="print-meta-chips">';
+  h += '    <span class="print-chip">📅 ' + esc(new Date().toLocaleDateString([], { dateStyle: 'full' })) + '</span>';
+  h += '    <span class="print-chip">📍 Scope: ' + esc(reportScope) + '</span>';
+  if (u) h += '    <span class="print-chip">👤 Generated by ' + esc(u.displayName) + ' (' + esc(getTeam(u.teamId).name) + ')</span>';
+  h += '    <span class="print-chip">👥 Squad: 6 Players</span>';
+  h += '  </div>';
+  h += '</div>';
+
+  // 1. Automatic Awards Section (4 cards)
+  h += '<div class="print-section">';
+  h += '  <div class="print-section-title">🏆 Official Awards &amp; Top Performers</div>';
+  h += '  <div class="print-award-grid">';
+
+  const printCard = (emoji, title, name, sub) =>
+    '<div class="print-award-card">' +
+      '<div class="print-award-emoji">' + emoji + '</div>' +
+      '<div class="print-award-title">' + title + '</div>' +
+      '<div class="print-award-name">' + (name ? esc(name) : '—') + '</div>' +
+      '<div class="print-award-sub">' + (sub ? esc(sub) : 'No detailed match logged') + '</div>' +
+    '</div>';
+
+  h += printCard('🥇', 'Best Batter', awards.bestPlayer && awards.bestPlayer.label, awards.bestPlayer ? awards.bestPlayer.runs + ' runs (' + awards.bestPlayer.balls + 'b, SR ' + awards.bestPlayer.sr + ') · ' + awards.bestPlayer.matchName : null);
+  h += printCard('🎯', 'Best Wicket-Taker', awards.bestBowler && awards.bestBowler.label, awards.bestBowler ? awards.bestBowler.wickets + ' wkts · ' + awards.bestBowler.overs + ' ov (Econ ' + awards.bestBowler.economy + ') · ' + awards.bestBowler.matchName : null);
+  h += printCard('🏅', 'Man of the Match', awards.mom && awards.mom.label, awards.mom ? awards.mom.impact + ' impact pts' + (awards.mom.detail ? ' (' + awards.mom.detail + ')' : '') + ' · ' + awards.mom.matchName : null);
+  h += printCard('👑', (sel === '__series__' ? 'Player of the Series' : 'Top Impact Player'), awards.pos && awards.pos.label, awards.pos ? awards.pos.impact + ' total impact pts · ' + awards.pos.matches + ' match(es)' : null);
+
+  h += '  </div>';
+  h += '</div>';
+
+  // 2. Team Standings & Head-to-Head Totals
+  h += '<div class="print-section">';
+  h += '  <div class="print-section-title">📊 Team Performance &amp; Head-to-Head Standings</div>';
+  h += '  <table class="print-table">';
+  h += '    <thead><tr><th>Team</th><th>Captain</th><th>Matches</th><th>Runs Scored</th><th>Wickets Lost</th><th>Status</th></tr></thead>';
+  h += '    <tbody>';
   Object.values(state.teams).forEach(t => {
-    const ms = state.matches.filter(m => m.teams && m.teams[t.id]);
+    const ms = targetMatches.filter(m => m.teams && m.teams[t.id]);
     const runs = ms.reduce((s, m) => s + ((m.teams[t.id] && m.teams[t.id].runs) || 0), 0);
     const wkts = ms.reduce((s, m) => s + ((m.teams[t.id] && m.teams[t.id].wickets) || 0), 0);
-    h += '<tr><td>' + esc(t.name) + '</td><td>' + ms.length + '</td><td>' + runs + '</td><td>' + wkts + '</td></tr>';
+    const capt = t.captain ? displayNameOf(t.id, t.captain) : 'Not elected';
+    h += '<tr>';
+    h += '  <td><strong style="color:' + (t.color || '#1e3a8a') + '">' + esc(t.name) + '</strong> (' + esc(t.short) + ')</td>';
+    h += '  <td>👑 ' + esc(capt) + '</td>';
+    h += '  <td>' + ms.length + '</td>';
+    h += '  <td><strong>' + runs + '</strong></td>';
+    h += '  <td>' + wkts + '</td>';
+    h += '  <td>' + (ms.length > 0 ? 'Active Squad' : 'No games') + '</td>';
+    h += '</tr>';
   });
-  h += '</table>';
-  h += '<h2>Matches (' + state.matches.length + ')</h2>';
-  if (!state.matches.length) h += '<p><em>No matches yet.</em></p>';
-  state.matches.forEach(m => { h += printMatchHTML(m); });
-  h += '<h2>Awards</h2>';
-  h += '<table><tr><th>Award</th><th>Player</th><th>Detail</th></tr>';
-  [
-    ['Best Batter', awards.bestPlayer, awards.bestPlayer ? awards.bestPlayer.runs + ' runs · ' + awards.bestPlayer.matchName : '—'],
-    ['Man of the Match', awards.mom, awards.mom ? awards.mom.impact + ' impact pts · ' + awards.mom.matchName : '—'],
-    ['Player of the Series', awards.pos, awards.pos ? awards.pos.impact + ' impact pts · ' + awards.pos.matches + ' match(es)' : '—']
-  ].forEach(r => h += '<tr><td>' + r[0] + '</td><td>' + (r[1] ? esc(r[1].label) : '—') + '</td><td>' + esc(r[2]) + '</td></tr>');
-  h += '</table>';
+  h += '    </tbody>';
+  h += '  </table>';
+  h += '</div>';
+
+  // 3. Match Scorecards
+  h += '<div class="print-section">';
+  h += '  <div class="print-section-title">🏏 Match Scorecards (' + targetMatches.length + ')</div>';
+  if (!targetMatches.length) {
+    h += '<p style="color:#64748b;font-style:italic;padding:8px 0">No matches found for the selected scope.</p>';
+  } else {
+    targetMatches.forEach((m, idx) => {
+      h += printMatchHTML(m, idx + 1);
+    });
+  }
+  h += '</div>';
+
   document.getElementById('print-area').innerHTML = h;
   window.print();
 }
 
-/* ---------- 14. Team profile + secret-code vote ---------- */
+/* ---------- 14. Team profile, Captain Election & Secret-code vote ---------- */
 function saveDisplayName(name) {
   const t = (name || '').trim();
   if (!t) return toast('Display name cannot be empty.', 'error');
@@ -1458,20 +1716,23 @@ function saveDisplayName(name) {
   persistUser();
   renderHeader();
   renderTeam();
+  renderDashboard();
   toast('Display name updated!', 'success');
 }
+
 function checkVotePassed(teamId, v) {
   const needed = majority(teamId);
   const got = Object.keys(v.votes || {}).length;
   if (got >= needed) {
     state.teams[teamId].secretCode = v.proposedCode;
     db.saveTeam(teamId, state.teams[teamId]);
-    db.saveVote(teamId, { proposedCode: '', votes: {} });
+    db.saveVote(teamId, { proposedCode: '', votes: {}, proposedCaptain: v.proposedCaptain || '', captainVotes: v.captainVotes || {} });
     toast('✅ Secret code changed successfully!', 'success');
   } else {
     toast('Vote recorded (' + got + '/' + needed + ').', 'success');
   }
 }
+
 function voteForCode(proposed) {
   const teamId = state.user.teamId;
   const clean = (proposed || '').trim();
@@ -1482,62 +1743,199 @@ function voteForCode(proposed) {
   db.saveVote(teamId, v);
   checkVotePassed(teamId, v);
 }
+
 function voteYes() {
   const teamId = state.user.teamId;
   const v = state.votes[teamId] || { proposedCode: '', votes: {} };
-  if (!v.proposedCode) return toast('No active vote.', 'error');
+  if (!v.proposedCode) return toast('No active code vote.', 'error');
   v.votes[state.user.member] = true;
   db.saveVote(teamId, v);
   checkVotePassed(teamId, v);
 }
+
+/* ---------- 14b. Team Captain Selection with Majority Voting ---------- */
+function proposeCaptain(candidate) {
+  const u = state.user; if (!u) return;
+  const teamId = u.teamId;
+  const team = getTeam(teamId);
+  const clean = (candidate || '').trim();
+  if (!team.members.includes(clean)) return toast('Please select a member of your squad.', 'error');
+  const v = state.votes[teamId] || { proposedCode: '', votes: {} };
+  if (v.proposedCaptain !== clean) {
+    v.proposedCaptain = clean;
+    v.captainVotes = {};
+  }
+  if (!v.captainVotes) v.captainVotes = {};
+  v.captainVotes[u.member] = true;
+  db.saveVote(teamId, v);
+  checkCaptainVotePassed(teamId, v);
+}
+
+function voteCaptainYes() {
+  const u = state.user; if (!u) return;
+  const teamId = u.teamId;
+  const v = state.votes[teamId] || {};
+  if (!v.proposedCaptain) return toast('No active captain election.', 'error');
+  if (!v.captainVotes) v.captainVotes = {};
+  v.captainVotes[u.member] = true;
+  db.saveVote(teamId, v);
+  checkCaptainVotePassed(teamId, v);
+}
+
+async function checkCaptainVotePassed(teamId, v) {
+  const needed = majority(teamId);
+  const got = Object.keys(v.captainVotes || {}).length;
+  if (got >= needed) {
+    const elected = v.proposedCaptain;
+    const team = state.teams[teamId] || getTeam(teamId);
+    team.captain = elected;
+    delete v.proposedCaptain;
+    delete v.captainVotes;
+    await db.saveTeam(teamId, team);
+    await db.saveVote(teamId, v);
+    renderTeam();
+    renderDashboard();
+    toast('👑 ' + displayNameOf(teamId, elected) + ' elected as Captain of ' + team.name + '! 🏏', 'success');
+  } else {
+    renderTeam();
+    toast('Captain vote recorded (' + got + '/' + needed + ').', 'success');
+  }
+}
+
 function renderTeam() {
   const u = state.user; if (!u) return;
   const a = document.activeElement;
-  if (a && (a.closest('#team-profile') || a.closest('#team-vote'))) return; // don't clobber typing
+  if (a && (a.closest('#team-profile') || a.closest('#team-captain') || a.closest('#team-vote') || a.closest('#theme-customizer'))) return; // don't clobber active typing
   const team = getTeam(u.teamId);
+  const captainName = team.captain ? displayNameOf(team.id, team.captain) : 'Not elected yet (Vote below)';
 
-  document.getElementById('team-profile').innerHTML =
-    '<h3 class="card-title">Your Profile</h3>' +
-    '<p class="muted" style="font-size:.85rem">Logged in as <strong style="color:var(--white)">' + esc(u.member) + '</strong> · ' + esc(team.name) + '</p>' +
-    '<form data-form="profile" class="mt">' +
-      '<label class="field"><span>Display Name</span><input id="display-name-input" type="text" value="' + esc(u.displayName) + '" maxlength="30" required /></label>' +
-      '<button type="submit" class="btn btn-primary btn-block">Save Display Name</button>' +
-    '</form>' +
-    '<h3 class="card-title mt">Team Members</h3>' +
-    team.members.map(m =>
-      '<div class="row" style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06)"><span>' + esc(displayNameOf(team.id, m)) + '</span>' +
-      (m === u.member ? '<span class="badge badge-you">you</span>' : '') + '</div>').join('');
+  // 1. Profile & Squad Roster
+  const profileEl = document.getElementById('team-profile');
+  if (profileEl) {
+    profileEl.innerHTML =
+      '<h3 class="card-title">Your Profile</h3>' +
+      '<p class="muted" style="font-size:.85rem">Logged in as <strong style="color:var(--white)">' + esc(u.member) + '</strong> · ' + esc(team.name) + '</p>' +
+      '<p class="mt" style="font-size:.88rem">👑 <strong>Official Captain:</strong> <span class="accent">' + esc(captainName) + '</span></p>' +
+      '<form data-form="profile" class="mt">' +
+        '<label class="field"><span>Display Name</span><input id="display-name-input" type="text" value="' + esc(u.displayName) + '" maxlength="30" required /></label>' +
+        '<button type="submit" class="btn btn-primary btn-block">Save Display Name</button>' +
+      '</form>' +
+      '<h3 class="card-title mt">Squad Roster</h3>' +
+      team.members.map(m =>
+        '<div class="row spread" style="padding:7px 0;border-bottom:1px solid rgba(255,255,255,.06)">' +
+          '<div>' +
+            '<span>' + esc(displayNameOf(team.id, m)) + '</span>' +
+            (m === team.captain ? ' <span class="badge badge-captain">👑 Captain</span>' : '') +
+            (m === u.member ? ' <span class="badge badge-you">you</span>' : '') +
+          '</div>' +
+          '<span class="muted" style="font-size:.78rem">' + esc(m) + '</span>' +
+        '</div>').join('');
+  }
 
-  const v = state.votes[u.teamId] || { proposedCode: '', votes: {} };
-  const needed = majority(team.id);
-  const got = Object.keys(v.votes || {}).length;
-  const voters = Object.keys(v.votes || {}).map(esc).join(', ');
-  const activeVote = v.proposedCode && got > 0;
-  const alreadyVoted = !!v.votes[u.member];
+  // 2. Team Captain Election
+  const captainEl = document.getElementById('team-captain');
+  if (captainEl) {
+    const v = state.votes[u.teamId] || {};
+    const needed = majority(team.id);
+    const got = Object.keys(v.captainVotes || {}).length;
+    const voters = Object.keys(v.captainVotes || {}).map(esc).join(', ');
+    const activeElection = v.proposedCaptain && got > 0;
+    const alreadyVoted = !!(v.captainVotes && v.captainVotes[u.member]);
+    const candidateName = v.proposedCaptain ? displayNameOf(team.id, v.proposedCaptain) : '';
 
-  document.getElementById('team-vote').innerHTML =
-    '<h3 class="card-title">🔐 Change Team Secret Code</h3>' +
-    '<p class="muted" style="font-size:.85rem">Current code: <code>' + esc(team.secretCode) + '</code></p>' +
-    (activeVote
-      ? '<div class="mt" style="background:rgba(0,0,0,.22);border-radius:12px;padding:12px">' +
-          '<div class="spread"><span>Proposed:</span><code>' + esc(v.proposedCode) + '</code></div>' +
-          '<div class="muted" style="font-size:.82rem;margin-top:6px">Votes ' + got + '/' + needed + ' — ' + voters + '</div>' +
-          '<div class="progress mt"><div class="progress-fill" style="width:' + Math.min(100, got / needed * 100) + '%"></div></div>' +
-          '<p class="hint">A majority must approve. Proposing a different code resets the vote.</p>' +
-        '</div>'
-      : '<p class="hint">No active vote. Propose a new code — it needs ' + needed + ' vote(s) to take effect.</p>') +
-    (activeVote && !alreadyVoted
-      ? '<button class="btn btn-primary btn-block mt" data-action="vote-yes">👍 Vote Yes for "' + esc(v.proposedCode) + '"</button>' : '') +
-    '<form data-form="vote" class="mt">' +
-      '<label class="field"><span>New Secret Code</span><input id="vote-code-input" type="text" placeholder="e.g. NewSecret123" minlength="4" required /></label>' +
-      '<button type="submit" class="btn btn-block">Propose / Vote</button>' +
-    '</form>';
+    captainEl.innerHTML =
+      '<h3 class="card-title">👑 Team Captain Election</h3>' +
+      '<p class="muted" style="font-size:.85rem">Active Captain: <strong style="color:var(--white)">' + esc(captainName) + '</strong></p>' +
+      (activeElection
+        ? '<div class="mt" style="background:rgba(0,0,0,.22);border-radius:12px;padding:12px">' +
+            '<div class="spread"><span>Nominated Candidate:</span><strong class="accent">👑 ' + esc(candidateName) + '</strong></div>' +
+            '<div class="muted" style="font-size:.82rem;margin-top:6px">Votes: ' + got + '/' + needed + ' — ' + voters + '</div>' +
+            '<div class="progress mt"><div class="progress-fill" style="width:' + Math.min(100, got / needed * 100) + '%"></div></div>' +
+            '<p class="hint">Requires majority consensus (' + needed + ' votes) to elect.</p>' +
+          '</div>'
+        : '<p class="hint">No active captain election. Nominate a teammate — requires ' + needed + ' vote(s) to pass.</p>') +
+      (activeElection && !alreadyVoted
+        ? '<button type="button" class="btn btn-primary btn-block mt" data-action="vote-captain-yes">👍 Vote for "' + esc(candidateName) + '" as Captain</button>'
+        : '') +
+      '<form data-form="captain" class="mt">' +
+        '<label class="field"><span>Nominate Squad Member</span>' +
+          '<select id="captain-candidate-select" required>' +
+            team.members.map(m => '<option value="' + esc(m) + '"' + (m === team.captain ? ' selected' : '') + '>' + esc(displayNameOf(team.id, m)) + (m === team.captain ? ' (Current Captain)' : '') + '</option>').join('') +
+          '</select>' +
+        '</label>' +
+        '<button type="submit" class="btn btn-block">Propose / Vote for Captain</button>' +
+      '</form>';
+  }
+
+  // 3. Secret Code Vote
+  const voteEl = document.getElementById('team-vote');
+  if (voteEl) {
+    const v = state.votes[u.teamId] || { proposedCode: '', votes: {} };
+    const needed = majority(team.id);
+    const got = Object.keys(v.votes || {}).length;
+    const voters = Object.keys(v.votes || {}).map(esc).join(', ');
+    const activeVote = v.proposedCode && got > 0;
+    const alreadyVoted = !!v.votes[u.member];
+
+    voteEl.innerHTML =
+      '<h3 class="card-title">🔐 Change Team Secret Code</h3>' +
+      '<p class="muted" style="font-size:.85rem">Current code: <code>' + esc(team.secretCode) + '</code></p>' +
+      (activeVote
+        ? '<div class="mt" style="background:rgba(0,0,0,.22);border-radius:12px;padding:12px">' +
+            '<div class="spread"><span>Proposed Code:</span><code>' + esc(v.proposedCode) + '</code></div>' +
+            '<div class="muted" style="font-size:.82rem;margin-top:6px">Votes: ' + got + '/' + needed + ' — ' + voters + '</div>' +
+            '<div class="progress mt"><div class="progress-fill" style="width:' + Math.min(100, got / needed * 100) + '%"></div></div>' +
+            '<p class="hint">A majority must approve. Proposing a different code resets the vote.</p>' +
+          '</div>'
+        : '<p class="hint">No active vote. Propose a new code — it needs ' + needed + ' vote(s) to take effect.</p>') +
+      (activeVote && !alreadyVoted
+        ? '<button type="button" class="btn btn-primary btn-block mt" data-action="vote-yes">👍 Vote Yes for "' + esc(v.proposedCode) + '"</button>' : '') +
+      '<form data-form="vote" class="mt">' +
+        '<label class="field"><span>New Secret Code</span><input id="vote-code-input" type="text" placeholder="e.g. NewSecret123" minlength="4" required /></label>' +
+        '<button type="submit" class="btn btn-block">Propose / Vote for Code</button>' +
+      '</form>';
+  }
+
+  // 4. Per-Player Theme Customizer
+  const themeEl = document.getElementById('theme-customizer');
+  if (themeEl) {
+    const activeTheme = getSavedTheme();
+    themeEl.innerHTML =
+      '<h3 class="card-title">🎨 Per-Player Theme Switcher</h3>' +
+      '<p class="muted" style="font-size:.85rem">Saved locally for this browser only. Customize your look without changing other players’ themes.</p>' +
+      '<div class="theme-grid">' +
+        THEMES.map(t => {
+          const isActive = t.id === activeTheme;
+          return '' +
+            '<button type="button" class="theme-card' + (isActive ? ' is-active' : '') + '" data-action="set-theme" data-theme-id="' + t.id + '">' +
+              '<div class="theme-card-top">' +
+                '<span class="theme-card-title">' + t.icon + ' ' + esc(t.name) + '</span>' +
+                (isActive ? '<span class="badge badge-won" style="font-size:.68rem">✓ Active</span>' : '') +
+              '</div>' +
+              '<div class="theme-card-desc">' + esc(t.desc) + '</div>' +
+              '<div class="theme-swatches mt">' +
+                '<span class="theme-dot" style="background:' + t.primary + '"></span>' +
+                '<span class="theme-dot" style="background:' + t.accent + '"></span>' +
+              '</div>' +
+            '</button>';
+        }).join('') +
+      '</div>';
+  }
 }
 
 /* ---------- 15. Event wiring ---------- */
 function globalClick(e) {
   const modeOpt = e.target.closest('.mode-option');
   if (modeOpt) { uiMode = modeOpt.dataset.mode; renderSetupForm(); return; }
+  const themeCard = e.target.closest('[data-theme-id]');
+  if (themeCard) {
+    const tId = themeCard.dataset.themeId;
+    applyTheme(tId);
+    renderTeam();
+    const tObj = THEMES.find(x => x.id === tId);
+    toast('Theme set to ' + (tObj ? tObj.name : tId) + ' ✨', 'success');
+    return;
+  }
   const el = e.target.closest('[data-action]');
   if (!el) return;
   switch (el.dataset.action) {
@@ -1548,7 +1946,15 @@ function globalClick(e) {
     case 'add-player': addPlayer(el.dataset.team); break;
     case 'add-bowler': addBowler(el.dataset.team); break;
     case 'remove-player': removePlayer(el.dataset.team, +el.dataset.idx); break;
+    case 'remove-bowler': removeBowler(el.dataset.team, +el.dataset.idx); break;
     case 'vote-yes': voteYes(); break;
+    case 'vote-captain-yes': voteCaptainYes(); break;
+    case 'set-theme':
+      applyTheme(el.dataset.themeId);
+      renderTeam();
+      const tObj = THEMES.find(x => x.id === el.dataset.themeId);
+      toast('Theme set to ' + (tObj ? tObj.name : el.dataset.themeId) + ' ✨', 'success');
+      break;
     case 'go-match': showSection('match-setup-section'); break;
     case 'ball': applyBall(el.dataset.team, +el.dataset.runs); break;
     case 'wicket': applyWicket(el.dataset.team); break;
@@ -1563,6 +1969,7 @@ function globalSubmit(e) {
   if (kind === 'start') startMatch();
   else if (kind === 'profile') saveDisplayName(document.getElementById('display-name-input').value);
   else if (kind === 'vote') voteForCode(document.getElementById('vote-code-input').value);
+  else if (kind === 'captain') proposeCaptain(document.getElementById('captain-candidate-select').value);
 }
 function globalInput(e) {
   const el = e.target;
@@ -1577,6 +1984,7 @@ function globalChange(e) {
   else if (el.dataset.bowl !== undefined) saveBowlerField(el);
   else if (el.dataset.out !== undefined) toggleOut(el);
   else if (el.dataset.rename !== undefined) renamePlayer(el);
+  else if (el.dataset.renameBowler !== undefined) renameBowler(el);
 }
 
 /* ---------- 16. Init ---------- */
