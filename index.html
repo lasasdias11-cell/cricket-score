@@ -4,14 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#05070d" />
-  <meta name="description" content="Thursday Cricket — a lightweight, real-time cricket match scoring app for your squad." />
-  <title>Thursday Cricket · Live Scoring</title>
+  <meta name="description" content="Thursday Cricket — Multi-Innings, Live Scoring, Ball-by-Ball Analysis & Dynamic Squads." />
+  <title>Thursday Cricket · Live Scoring & Multi-Innings</title>
   <link rel="preconnect" href="https://www.gstatic.com" crossorigin />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <!-- Floating animated background -->
+  <!-- Floating animated ambient canvas -->
   <div class="bg" aria-hidden="true">
     <div class="blob blob-1"></div>
     <div class="blob blob-2"></div>
@@ -27,7 +27,7 @@
         <div class="brand">
           <div class="logo">🏏</div>
           <h1>Thursday Cricket</h1>
-          <p class="tagline">Live scoring for your squad</p>
+          <p class="tagline">Multi-innings live scoring for your squad</p>
         </div>
         <form id="login-form" autocomplete="off" novalidate>
           <label class="field">
@@ -39,6 +39,22 @@
             <input id="login-code" type="password" placeholder="••••••••" autocomplete="off" required />
           </label>
           <button type="submit" class="btn btn-primary btn-block">Enter Scoreboard</button>
+        </form>
+        <button id="register-toggle" class="btn btn-ghost btn-block mt" type="button">+ Register New Player</button>
+        <form id="register-form" class="hidden mt" data-form="register" autocomplete="off" novalidate>
+          <label class="field">
+            <span>Player Name</span>
+            <input id="reg-name" type="text" maxlength="40" placeholder="e.g. Nuwan Perera" required />
+          </label>
+          <label class="field">
+            <span>Player Tag / Nickname</span>
+            <input id="reg-tag" type="text" maxlength="30" placeholder="e.g. The Finisher" />
+          </label>
+          <label class="field">
+            <span>Assign Team</span>
+            <select id="reg-team" required></select>
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Create Player Profile</button>
         </form>
         <p id="login-sync" class="sync-status local">● Connecting…</p>
         <p class="hint">Default codes — White Tigers: <code>White@tiger</code> · Black Panthers: <code>Black@panthers</code></p>
@@ -57,11 +73,11 @@
           <span class="nav-icon">🏏</span>
           <span class="nav-text">Match</span>
         </button>
-        <button data-section="scoreboard-section" class="nav-btn" title="Live & Post-Match Scoreboard">
+        <button data-section="scoreboard-section" class="nav-btn" title="Live &amp; Scoreboard">
           <span class="nav-icon">📡</span>
           <span class="nav-text">Scoreboard</span>
         </button>
-        <button data-section="analysis-section" class="nav-btn" title="Analysis & Awards">
+        <button data-section="analysis-section" class="nav-btn" title="Analysis &amp; Awards">
           <span class="nav-icon">📊</span>
           <span class="nav-text">Analysis</span>
         </button>
@@ -98,6 +114,7 @@
         <div id="match-setup-section" class="section hidden">
           <h2 class="panel-title">Start a Match</h2>
           <div class="glass card" id="match-setup"></div>
+          <div class="glass card mt" id="match-team-builder"></div>
         </div>
 
         <!-- Live scoreboard -->
@@ -129,7 +146,7 @@
           <div class="glass card" id="awards"></div>
           <div class="glass card">
             <h3 class="card-title">🖨 Printable Summary</h3>
-            <p class="hint" style="margin-top:0">Generate a clean, print-ready report of every match, scorecard and award.</p>
+            <p class="hint" style="margin-top:0">Generate a clean, print-ready report of every match, multi-innings scorecard, and award.</p>
             <button id="print-btn" class="btn btn-primary btn-block mt" type="button">🖨 Print Match Summary</button>
           </div>
           <div class="glass card">
@@ -138,7 +155,7 @@
           </div>
         </div>
 
-        <!-- Settings, Captain Election & Themes -->
+        <!-- Settings, Captain Election, Custom Teams & Themes -->
         <div id="settings-section" class="section hidden">
           <h2 class="panel-title">Settings &amp; Team Management</h2>
           <div class="grid grid-2">
@@ -147,11 +164,12 @@
           </div>
           <div class="grid grid-2 mt">
             <div class="glass card" id="team-vote"></div>
-            <div class="glass card" id="theme-customizer"></div>
+            <div class="glass card" id="team-manager"></div>
           </div>
+          <div class="glass card mt" id="theme-customizer"></div>
         </div>
 
-      </main>
+    </main>
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

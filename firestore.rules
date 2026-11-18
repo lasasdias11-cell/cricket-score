@@ -8,6 +8,7 @@ rules_version = '2';
 // require that token (request.auth != null), which blocks raw unauthenticated
 // access to the database across all collections:
 //   - /teams
+//   - /customTeams
 //   - /matches
 //   - /teamVotes
 //   - /players
@@ -25,22 +26,27 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Teams (roster, display name, secret code).
+    // Teams (standard squad rosters, display names, secret codes, captains).
     match /teams/{teamId} {
       allow read, write: if isSignedIn();
     }
 
-    // Matches — live scoring, quick totals, retro & post-match detailed scorecards.
+    // Custom Teams (dynamic user-created teams, tags, colors & rosters).
+    match /customTeams/{teamId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Matches — multi-innings live scoring, ball-by-ball, retro & post-match detailed.
     match /matches/{matchId} {
       allow read, write: if isSignedIn();
     }
 
-    // Team secret-code votes.
+    // Team votes (secret-code votes and captain election consensus).
     match /teamVotes/{teamId} {
       allow read, write: if isSignedIn();
     }
 
-    // Player profiles & display-name overrides.
+    // Player profiles, custom nicknames & team assignments.
     match /players/{playerId} {
       allow read, write: if isSignedIn();
     }
@@ -51,4 +57,3 @@ service cloud.firestore {
     }
   }
 }
-
