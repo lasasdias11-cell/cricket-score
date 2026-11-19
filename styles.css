@@ -24,10 +24,9 @@
 :root.theme-emerald-pitch { --tc-bg:#08170f; --tc-surface:rgba(20,47,31,.82); --tc-accent:#b9f36b; --tc-text:#f0f9e9; --tc-glow:rgba(185,243,107,.2); }
 :root.theme-midnight-apex { --tc-bg:#080d20; --tc-surface:rgba(21,30,58,.82); --tc-accent:#8eb8ff; --tc-text:#eff3ff; --tc-glow:rgba(142,184,255,.23); }
 * { box-sizing: border-box; }
-html { min-width: 320px; min-height: 100%; background: var(--tc-bg); scroll-behavior: smooth; }
+html { min-height: 100%; background: var(--tc-bg); scroll-behavior: smooth; }
 body {
   margin: 0;
-  min-width: 320px;
   min-height: 100vh;
   color: #f8fafc;
   background:

@@ -31,11 +31,11 @@ export function tallyCaptainVotes(teamId, votes = readVotes().captain[teamId] ??
   return { teamId, counts, winner: winner && winner[1] > total / 2 ? winner[0] : null, votes: total };
 }
 
-export function castCodeVote({ voterId, code } = {}) {
-  if (!voterId || typeof code !== "string" || !code.trim()) throw new TypeError("Voter and secret code are required.");
+export function castCodeVote({ voterId, teamId = "general", code } = {}) {
+  if (!voterId || !teamId || typeof code !== "string" || !code.trim()) throw new TypeError("Voter, team and secret code are required.");
   const votes = readVotes();
-  const vote = { id: `${Date.now()}-${String(voterId)}`, voterId: String(voterId), code: code.trim(), at: new Date().toISOString() };
-  votes.codes = [...votes.codes.filter((item) => item.voterId !== vote.voterId), vote];
+  const vote = { id: `${Date.now()}-${String(voterId)}`, voterId: String(voterId), teamId: String(teamId), code: code.trim(), at: new Date().toISOString() };
+  votes.codes = [...votes.codes.filter((item) => item.voterId !== vote.voterId || item.teamId !== vote.teamId), vote];
   saveVotes(votes);
   return vote;
 }
@@ -53,4 +53,25 @@ export function tallyCodeVotes(votes = readVotes().codes, secretCode) {
 
 export function getVotes() {
   return readVotes();
+}
+
+export function mergeRemoteVotes(records = []) {
+  if (!Array.isArray(records)) throw new TypeError("Remote votes must be a list.");
+  const votes = readVotes();
+  for (const record of records) {
+    if (record.kind === "captain" && record.teamId && record.voterId && record.candidateId) {
+      const current = votes.captain[record.teamId] ?? [];
+      votes.captain[record.teamId] = [
+        ...current.filter((vote) => vote.voterId !== record.voterId),
+        { ...record, id: String(record.voterId) }
+      ];
+    } else if (record.kind === "code" && record.teamId && record.voterId && record.code) {
+      votes.codes = [
+        ...votes.codes.filter((vote) => !(vote.voterId === record.voterId && vote.teamId === record.teamId)),
+        record
+      ];
+    }
+  }
+  saveVotes(votes);
+  return votes;
 }

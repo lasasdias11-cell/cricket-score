@@ -1,11 +1,14 @@
-import { initFirebase, getFirebaseServices, readFirestoreCollection, registerWithFirebase, signInWithFirebase, signOutFirebase, writeFirestore } from "./firebase.js";
+import {
+  ensureAnonymousAuth, getFirebaseServices, initFirebase, readFirestoreCollection,
+  registerWithFirebase, signInWithFirebase, signOutFirebase, subscribeFirestoreCollection, writeFirestore
+} from "./firebase.js";
 import { createStore, createInitialState, DEFAULT_TEAMS } from "./state.js";
 import {
   addBall, addRetrospectiveStats, ballsToOvers, computeTarget, createMatch, endInnings,
   finalizeMatch, startNextInnings, swapStrike, undoLastBall
 } from "./scoring.js";
 import { buildLastMatch, buildPerMatch, buildSeriesTotals, buildThisWeekMatch, computeAwards } from "./analysis.js";
-import { castCaptainVote, castCodeVote, getVotes, tallyCaptainVotes, tallyCodeVotes } from "./voting.js";
+import { castCaptainVote, castCodeVote, getVotes, mergeRemoteVotes, tallyCaptainVotes, tallyCodeVotes } from "./voting.js";
 import { buildPrintReport, triggerPrint } from "./report.js";
 import { createCustomTeam, listCustomTeams, openCustomTeamBuilder, updatePlayerProfile } from "./teams.js";
 import { attachRippleEffect, escapeHTML, openGlassModal, renderRouter, setInlineStatus } from "./ui.js";
@@ -16,12 +19,17 @@ attachRippleEffect();
 const firebase = initFirebase();
 const store = createStore(createInitialState());
 const el = (id) => document.getElementById(id);
-let offlineAlertShown = false;
 let activeFilter = "series";
 let currentTeams = [];
 let viewingInnings = null;
 const LOCAL_USERS_KEY = "tc_users_v1";
 const LOCAL_SESSION_KEY = "tc_session";
+const SYNC_QUEUE_KEY = "tc_sync_queue_v1";
+const FIRESTORE_COLLECTIONS = ["teams", "matches", "players", "customTeams", "teamVotes", "users"];
+const cloudListeners = new Map();
+let retryTimer = 0;
+let retryInProgress = false;
+let permissionAlertShown = false;
 
 try {
   store.load();
@@ -116,51 +124,370 @@ function showError(error, title = "Something needs attention") {
   });
 }
 
-function showOfflineNotice(error) {
-  if (offlineAlertShown) return;
-  offlineAlertShown = true;
-  console.warn("Firestore write failed; the saved local copy is available.", error);
-  setInlineStatus(el("app-status"), "Changes are saved on this device. Cloud sync is unavailable.", "error");
-  openGlassModal({
-    title: "Offline — saved locally",
-    body: "<p>Your changes are safe on this device. Cloud sync will resume when the connection is available.</p>",
-    actions: [{ id: "ok", label: "Continue", primary: true }]
-  }).finally(() => {
-    if (firebase.online) offlineAlertShown = false;
+function errorCode(error) {
+  return String(error?.code ?? "").split("/").at(-1);
+}
+
+function isPermissionDenied(error) {
+  return errorCode(error) === "permission-denied";
+}
+
+function handleFirestoreError(error, operation) {
+  if (isPermissionDenied(error)) {
+    if (!permissionAlertShown) {
+      permissionAlertShown = true;
+      void showError(error, "Firestore access denied");
+    }
+    return;
+  }
+  console.warn(`${operation} is unavailable; local data remains available.`, error);
+}
+
+function readSyncQueue() {
+  const queue = JSON.parse(localStorage.getItem(SYNC_QUEUE_KEY) ?? "[]");
+  if (!Array.isArray(queue)) throw new TypeError("The pending cloud sync queue is invalid.");
+  return queue;
+}
+
+function writeSyncQueue(queue) {
+  localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
+}
+
+function queueSyncWrite(path, data) {
+  const queue = readSyncQueue();
+  const existing = queue.find((item) => item.path === path);
+  const next = { path, data, attempts: existing?.attempts ?? 0, queuedAt: Date.now() };
+  writeSyncQueue([...queue.filter((item) => item.path !== path), next]);
+}
+
+function removeQueuedWrite(path) {
+  writeSyncQueue(readSyncQueue().filter((item) => item.path !== path));
+}
+
+function schedulePendingWriteRetry(delay = 15000) {
+  if (retryTimer || !firebase.db) return;
+  retryTimer = window.setTimeout(() => {
+    retryTimer = 0;
+    void retryPendingWrites();
+  }, delay);
+}
+
+async function retryPendingWrites() {
+  if (retryInProgress || !firebase.db || !firebase.online) return;
+  retryInProgress = true;
+  try {
+    try {
+      await firebase.ready;
+    } catch (error) {
+      if (!getFirebaseServices().auth?.currentUser) throw error;
+    }
+    const queue = readSyncQueue();
+    for (const item of queue) {
+      try {
+        await writeFirestore(item.path, item.data);
+        removeQueuedWrite(item.path);
+      } catch (error) {
+        const remaining = readSyncQueue().map((queued) => queued.path === item.path
+          ? { ...queued, attempts: (queued.attempts ?? 0) + 1 }
+          : queued);
+        writeSyncQueue(remaining);
+        handleFirestoreError(error, `Retrying ${item.path}`);
+        break;
+      }
+    }
+  } catch (error) {
+    handleFirestoreError(error, "Cloud sync");
+  } finally {
+    retryInProgress = false;
+    try {
+      const pending = readSyncQueue();
+      if (pending.length) {
+        const attempts = Math.min(...pending.map((item) => item.attempts ?? 0));
+        schedulePendingWriteRetry(Math.min(15000 * (2 ** Math.min(attempts, 4)), 240000));
+      }
+    } catch (error) {
+      showError(error, "Could not read pending cloud changes");
+    }
+  }
+}
+
+async function syncRemote(path, data) {
+  if (!firebase.db) return false;
+  try {
+    if (!getFirebaseServices().auth?.currentUser) {
+      try {
+        await firebase.ready;
+      } catch (error) {
+        if (!getFirebaseServices().auth?.currentUser) throw error;
+      }
+      if (!getFirebaseServices().auth?.currentUser) await ensureAnonymousAuth();
+    }
+    await writeFirestore(path, data);
+    removeQueuedWrite(path);
+    return true;
+  } catch (error) {
+    try {
+      store.persist();
+      queueSyncWrite(path, data);
+      handleFirestoreError(error, `Writing ${path}`);
+      if (!isPermissionDenied(error)) schedulePendingWriteRetry();
+    } catch (queueError) {
+      showError(queueError, "Could not save pending cloud changes");
+    }
+    return false;
+  }
+}
+
+function mergeLocalArray(key, records, getId = (record) => record.id) {
+  const localRecords = JSON.parse(localStorage.getItem(key) ?? "[]");
+  if (!Array.isArray(localRecords)) throw new TypeError(`Saved ${key} data is invalid.`);
+  const merged = new Map(localRecords.map((record) => [String(getId(record)), record]));
+  for (const record of records) merged.set(String(getId(record)), record);
+  const result = [...merged.values()];
+  localStorage.setItem(key, JSON.stringify(result));
+  return result;
+}
+
+function handleRemoteTeams(records) {
+  const remoteTeams = records.map((record) => ({ ...(record.team ?? record), id: record.team?.id ?? record.id }))
+    .filter((team) => team.id && team.name);
+  if (!remoteTeams.length) return;
+  store.update((state) => {
+    const teams = new Map(state.teams.map((team) => [team.id, team]));
+    for (const team of remoteTeams) teams.set(team.id, { ...teams.get(team.id), ...team });
+    return { ...state, teams: [...teams.values()] };
+  });
+  store.persist();
+}
+
+function handleRemoteMatches(records) {
+  const remoteMatches = records.map((record) => record.match ?? record).filter((match) => match?.id);
+  if (!remoteMatches.length) return;
+  store.update((state) => {
+    const matches = new Map(state.matches.map((match) => [match.id, match]));
+    for (const match of remoteMatches) matches.set(match.id, match);
+    return { ...state, matches: [...matches.values()] };
+  });
+  store.persist();
+}
+
+function handleRemotePlayers(records) {
+  const profiles = records.map((record) => record.profile ?? record)
+    .filter((profile) => profile.id && profile.name);
+  if (!profiles.length) return;
+  const byId = new Map();
+  for (const profile of [...mergeLocalArray("tc_players_v1", profiles), ...profiles]) byId.set(profile.id, profile);
+  const mergedProfiles = [...byId.values()];
+  localStorage.setItem("tc_players", JSON.stringify(mergedProfiles));
+  store.update((state) => {
+    const teams = state.teams.map((team) => {
+      const teamProfiles = mergedProfiles.filter((profile) => profile.teamId === team.id);
+      if (!teamProfiles.length) return team;
+      const roster = new Map((team.roster ?? []).map((player) => [String(player.id ?? player), player]));
+      for (const profile of teamProfiles) roster.set(profile.id, { ...roster.get(profile.id), ...profile });
+      return { ...team, roster: [...roster.values()] };
+    });
+    const currentProfile = mergedProfiles.find((profile) => profile.id === state.currentUser?.id);
+    return { ...state, teams, currentUser: currentProfile ? { ...state.currentUser, ...currentProfile } : state.currentUser };
+  });
+  store.persist();
+}
+
+function handleRemoteCustomTeams(records) {
+  const customTeams = records.map((record) => record.team ?? record).filter((team) => team.id && team.name);
+  if (!customTeams.length) return;
+  mergeLocalArray("tc_custom_teams_v1", customTeams);
+  store.update((state) => ({ ...state }));
+  store.persist();
+}
+
+function handleRemoteVotes(records) {
+  const votes = mergeRemoteVotes(records);
+  const overrides = JSON.parse(localStorage.getItem("tc_team_codes_v1") ?? "{}");
+  let changed = false;
+  for (const [teamKey, team] of Object.entries(SQUAD_TEAMS)) {
+    const codes = votes.codes.filter((vote) => vote.teamId === team.id);
+    if (!codes.length) continue;
+    const counts = new Map();
+    for (const vote of codes) counts.set(vote.code, (counts.get(vote.code) ?? 0) + 1);
+    const winner = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+    if (winner && winner[1] > codes.length / 2 && overrides[teamKey] !== winner[0]) {
+      overrides[teamKey] = winner[0];
+      changed = true;
+    }
+  }
+  if (changed) localStorage.setItem("tc_team_codes_v1", JSON.stringify(overrides));
+  store.update((state) => ({ ...state }));
+  store.persist();
+}
+
+function handleRemoteUsers(records) {
+  mergeLocalArray("tc_cloud_users_v1", records);
+}
+
+const CLOUD_HANDLERS = {
+  teams: handleRemoteTeams,
+  matches: handleRemoteMatches,
+  players: handleRemotePlayers,
+  customTeams: handleRemoteCustomTeams,
+  teamVotes: handleRemoteVotes,
+  users: handleRemoteUsers
+};
+
+function stopCloudListeners() {
+  for (const unsubscribe of cloudListeners.values()) unsubscribe();
+  cloudListeners.clear();
+}
+
+function startCloudListeners() {
+  if (!firebase.db || !firebase.auth?.currentUser) return;
+  stopCloudListeners();
+  for (const collection of FIRESTORE_COLLECTIONS) {
+    const unsubscribe = subscribeFirestoreCollection(
+      collection,
+      (records) => {
+        try {
+          CLOUD_HANDLERS[collection](records);
+          if (el("sync-status")) el("sync-status").textContent = firebase.online ? "Cloud synced" : "Offline";
+        } catch (error) {
+          showError(error, `Could not merge ${collection}`);
+        }
+      },
+      (error) => handleFirestoreError(error, `Listening to ${collection}`)
+    );
+    cloudListeners.set(collection, unsubscribe);
+  }
+}
+
+function makeSeedProfiles() {
+  return SEED_PLAYERS.map((player) => {
+    const team = SQUAD_TEAMS[player.teamKey];
+    return {
+      id: player.username.toLowerCase(),
+      username: player.username,
+      name: player.username,
+      email: resolveEmail(player.username, player.teamKey),
+      role: player.role,
+      tags: [...player.tags],
+      teamId: team.id,
+      updatedAt: new Date().toISOString()
+    };
   });
 }
 
-window.addEventListener("online", () => { offlineAlertShown = false; });
+async function syncLocalCollections() {
+  const snapshots = await Promise.all(FIRESTORE_COLLECTIONS.map((name) => readFirestoreCollection(name)));
+  const remoteByName = new Map(FIRESTORE_COLLECTIONS.map((name, index) => [name, snapshots[index]]));
+  const teams = remoteByName.get("teams");
+  const remoteTeamIds = new Set(teams.map((record) => record.id));
+  for (const team of DEFAULT_TEAMS) {
+    if (!remoteTeamIds.has(team.id)) await syncRemote(`teams/${team.id}`, { team, updatedAt: new Date().toISOString() });
+  }
 
-async function syncRemote(path, data) {
-  if (!getFirebaseServices().db) return;
+  const remoteMatchIds = new Set(remoteByName.get("matches").map((record) => record.match?.id ?? record.id));
+  for (const match of getMatches()) {
+    if (!remoteMatchIds.has(match.id)) {
+      await syncRemote(`matches/${match.id}`, { match, owner: store.getState().currentUser?.id ?? null, updatedAt: new Date().toISOString() });
+    }
+  }
+
+  const rosterProfiles = allKnownTeams().flatMap((team) => (team.roster ?? []).map((player) => {
+    const id = String(player.id ?? player.name ?? player);
+    return {
+      ...player,
+      id,
+      name: player.name ?? id,
+      role: player.role ?? "Player",
+      tags: Array.isArray(player.tags) ? player.tags : [],
+      teamId: team.id
+    };
+  }));
+  const localProfiles = mergeLocalArray("tc_players_v1", [...rosterProfiles, ...makeSeedProfiles(), ...readCustomPlayers()]);
+  const remotePlayerIds = new Set(remoteByName.get("players").map((record) => record.profile?.id ?? record.id));
+  for (const profile of localProfiles) {
+    if (profile.id && !remotePlayerIds.has(profile.id)) {
+      await syncRemote(`players/${profile.id}`, { profile, updatedAt: new Date().toISOString() });
+    }
+  }
+
+  const localCustomTeams = listCustomTeams();
+  const remoteCustomTeamIds = new Set(remoteByName.get("customTeams").map((record) => record.id));
+  for (const team of localCustomTeams) {
+    if (!remoteCustomTeamIds.has(team.id)) await syncRemote(`customTeams/${team.id}`, { team, updatedAt: new Date().toISOString() });
+  }
+
+  const remoteVoteIds = new Set(remoteByName.get("teamVotes").map((record) => record.id));
+  const votes = getVotes();
+  for (const [teamId, teamVotes] of Object.entries(votes.captain)) {
+    for (const vote of teamVotes) {
+      const documentId = `captain-${teamId}-${vote.voterId}`;
+      if (!remoteVoteIds.has(documentId)) await syncRemote(`teamVotes/${documentId}`, { ...vote, kind: "captain", teamId });
+    }
+  }
+  for (const vote of votes.codes) {
+    const documentId = `code-${vote.teamId ?? "general"}-${vote.voterId}`;
+    if (!remoteVoteIds.has(documentId)) await syncRemote(`teamVotes/${documentId}`, { ...vote, kind: "code", teamId: vote.teamId ?? "general" });
+  }
+  await syncSessionMetadata();
+}
+
+async function syncSessionMetadata() {
+  const authUser = firebase.auth?.currentUser;
+  if (!authUser) return;
+  const profile = store.getState().currentUser;
+  await syncRemote(`users/${authUser.uid}`, {
+    uid: authUser.uid,
+    userId: profile?.id ?? null,
+    username: profile?.name ?? null,
+    teamId: profile?.teamId ?? null,
+    email: profile?.email ?? authUser.email ?? null,
+    isAnonymous: Boolean(authUser.isAnonymous),
+    lastSeenAt: new Date().toISOString()
+  });
+}
+
+async function bootstrapCloudSync() {
+  if (!firebase.configured) {
+    el("sync-status").textContent = "Local";
+    const message = firebase.configurationError?.message
+      ?? "Firebase web app config is missing. Set __TC_FIREBASE_CONFIG__ or localStorage.tc_firebase_config to enable cloud sync.";
+    setInlineStatus(el("auth-status"), `Local mode · ${message}`);
+    if (firebase.configurationError) void showError(firebase.configurationError, "Firebase configuration");
+    return;
+  }
   try {
-    await writeFirestore(path, data);
+    await firebase.ready;
+    if (!firebase.auth?.currentUser) await ensureAnonymousAuth();
+    startCloudListeners();
+    await syncLocalCollections();
+    await retryPendingWrites();
+    if (el("sync-status")) el("sync-status").textContent = firebase.online ? "Cloud synced" : "Offline";
   } catch (error) {
-    store.persist();
-    showOfflineNotice(error);
+    handleFirestoreError(error, "Initial cloud sync");
+    setInlineStatus(el("auth-status"), "Local mode · cloud connection is unavailable.");
   }
 }
 
-async function syncRemoteMatches() {
-  if (!getFirebaseServices().db) return;
+async function activateCloudSync() {
+  if (!firebase.db || !firebase.auth?.currentUser) return;
+  startCloudListeners();
   try {
-    const remoteRecords = await readFirestoreCollection("matches");
-    const remoteMatches = remoteRecords
-      .filter((record) => record.owner === store.getState().currentUser?.id && record.match?.id)
-      .map((record) => record.match);
-    if (!remoteMatches.length) return;
-    store.update((state) => {
-      const byId = new Map(state.matches.map((match) => [match.id, match]));
-      for (const match of remoteMatches) if (!byId.has(match.id)) byId.set(match.id, match);
-      return { ...state, matches: [...byId.values()] };
-    });
-    store.persist();
+    await syncLocalCollections();
+    await retryPendingWrites();
   } catch (error) {
-    console.warn("Could not load cloud matches; local matches remain available.", error);
-    setInlineStatus(el("app-status"), "Cloud history is unavailable; showing this device's saved matches.", "error");
+    handleFirestoreError(error, "Cloud sync");
+    if (!error?.code) void showError(error, "Could not synchronize local data");
+    setInlineStatus(el("app-status"), "Local data is safe. Cloud sync will retry when available.");
   }
 }
+
+window.addEventListener("online", () => {
+  void retryPendingWrites();
+  if (firebase.db) {
+    if (firebase.auth?.currentUser) startCloudListeners();
+    else void bootstrapCloudSync();
+  }
+});
 
 function runSafely(handler) {
   return (event) => {
@@ -694,12 +1021,13 @@ function persistPlayer(profile) {
 }
 
 async function persistVote(teamId, vote, isCodeVote = false) {
+  const voterId = String(store.getState().currentUser?.id ?? vote.voterId);
   if (isCodeVote) {
-    await syncRemote(`teamVotes/${teamId}/codes/${vote.id}`, { ...vote, voterId: store.getState().currentUser.id });
-    await syncRemote(`teamVotes/${teamId}`, { updatedAt: new Date().toISOString() });
+    const documentId = `code-${teamId}-${voterId}`;
+    await syncRemote(`teamVotes/${documentId}`, { ...vote, id: documentId, kind: "code", teamId, voterId });
   } else {
-    const votes = getVotes().captain[teamId] ?? [];
-    await syncRemote(`teamVotes/${teamId}`, { captainVotes: votes, updatedAt: new Date().toISOString() });
+    const documentId = `captain-${teamId}-${voterId}`;
+    await syncRemote(`teamVotes/${documentId}`, { ...vote, id: documentId, kind: "captain", teamId, voterId });
   }
 }
 
@@ -719,8 +1047,13 @@ async function registerPlayer(event) {
   let firebaseUser = null;
   let firebaseError = null;
   if (firebase.auth) {
-    try { firebaseUser = await registerWithFirebase(email, password); }
-    catch (error) { firebaseError = error; }
+    try { await firebase.ready; } catch (error) { firebaseError = error; }
+    try {
+      firebaseUser = await registerWithFirebase(email, password);
+      firebaseError = null;
+    } catch (error) {
+      firebaseError = error;
+    }
   }
   const users = readLocalUsers();
   const existing = users.find((item) => item.email === email);
@@ -739,6 +1072,8 @@ async function registerPlayer(event) {
   setInlineStatus(el("app-status"), firebaseUser ? "Player registered and signed in." : "Player registered. This device is using local storage.");
   closeAuthSections();
   persistPlayer(profile);
+  await syncSessionMetadata();
+  await activateCloudSync();
   if (firebaseError && !firebaseUser) setInlineStatus(el("app-status"), "Firebase was unavailable; the player profile is saved on this device.");
   renderLoginPlayers();
   el("username-select").value = name;
@@ -758,8 +1093,13 @@ async function loginPlayer(event) {
   let firebaseUser = null;
   let firebaseError = null;
   if (firebase.auth) {
-    try { firebaseUser = await signInWithFirebase(email, password); }
-    catch (error) { firebaseError = error; }
+    try { await firebase.ready; } catch (error) { firebaseError = error; }
+    try {
+      firebaseUser = await signInWithFirebase(email, password);
+      firebaseError = null;
+    } catch (error) {
+      firebaseError = error;
+    }
   }
   const users = readLocalUsers();
   const seed = findSeedPlayer(username);
@@ -793,7 +1133,7 @@ async function loginPlayer(event) {
       actions: [{ id: "continue", label: "Continue", primary: true }]
     });
   }
-  await syncRemoteMatches();
+  await activateCloudSync();
 }
 
 async function advancedLogin() {
@@ -803,7 +1143,13 @@ async function advancedLogin() {
   let firebaseUser = null;
   let firebaseError = null;
   if (firebase.auth) {
-    try { firebaseUser = await signInWithFirebase(email, password); } catch (error) { firebaseError = error; }
+    try { await firebase.ready; } catch (error) { firebaseError = error; }
+    try {
+      firebaseUser = await signInWithFirebase(email, password);
+      firebaseError = null;
+    } catch (error) {
+      firebaseError = error;
+    }
   }
   const users = readLocalUsers();
   const account = users.find((item) => item.email === email);
@@ -828,17 +1174,24 @@ async function advancedLogin() {
   updateState((state) => ({ ...state, currentUser: { ...profile, id: firebaseUser?.uid ?? profile.id }, currentPage: "dashboard" }));
   localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify({ username: profile.name, teamId: profile.teamId, email, ts: Date.now() }));
   closeAuthSections();
+  await activateCloudSync();
   if (firebaseError) await showError(new Error("Firebase sign-in failed; the saved local profile was used."), "Offline sign-in");
 }
 
 async function signOut() {
   let signOutError;
-  try { await signOutFirebase(); } catch (error) { signOutError = error; }
+  try {
+    await signOutFirebase();
+    if (firebase.auth) await ensureAnonymousAuth();
+  } catch (error) {
+    signOutError = error;
+  }
   updateState((state) => ({ ...state, currentUser: null }));
   localStorage.removeItem(LOCAL_SESSION_KEY);
   closeAuthSections();
   el("login-form").reset();
   updateSelectedPlayer();
+  void syncSessionMetadata();
   if (signOutError) await showError(signOutError, "Signed out locally");
 }
 
@@ -1052,6 +1405,7 @@ async function saveProfile(event) {
   addPlayerToTeam(profile);
   persistPlayer(profile);
   await syncRemote(`teams/${profile.teamId}`, { team: teamById(profile.teamId) });
+  await syncSessionMetadata();
   setInlineStatus(el("app-status"), "Player profile saved.");
 }
 
@@ -1073,12 +1427,12 @@ async function submitCodeVote(event) {
   event.preventDefault();
   validateForm(event.currentTarget);
   const user = store.getState().currentUser;
+  const teamId = user.teamId ?? "general";
   const code = el("secret-code").value;
-  const vote = castCodeVote({ voterId: user.id, code });
-  const votes = getVotes().codes;
+  const vote = castCodeVote({ voterId: user.id, teamId, code });
+  const votes = getVotes().codes.filter((item) => item.teamId === teamId);
   const tally = tallyCodeVotes(votes, code);
   el("code-result").textContent = `${tally.matching} of ${tally.total} votes match this code${tally.majority ? " · majority reached" : ""}.`;
-  const teamId = user.teamId ?? "general";
   if (tally.majority) {
     const teamKey = Object.keys(SQUAD_TEAMS).find((key) => SQUAD_TEAMS[key].id === teamId);
     if (teamKey) {
@@ -1254,3 +1608,4 @@ function initialize() {
 }
 
 initialize();
+void bootstrapCloudSync();
