@@ -1,3 +1,4 @@
+import { FIREBASE_CONFIG } from "./firebase-config.js";
 import {
   ensureAnonymousAuth, getFirebaseServices, initFirebase, readFirestoreCollection,
   registerWithFirebase, signInWithFirebase, signOutFirebase, subscribeFirestoreCollection, writeFirestore
@@ -16,7 +17,7 @@ import { findSeedPlayer, resolveEmail, resolvePassword, SEED_PLAYERS, SQUAD_TEAM
 export { SQUAD_TEAMS, SEED_PLAYERS, resolveEmail, resolvePassword } from "./seed.js";
 
 attachRippleEffect();
-const firebase = initFirebase();
+const firebase = initFirebase(FIREBASE_CONFIG);
 const store = createStore(createInitialState());
 const el = (id) => document.getElementById(id);
 let activeFilter = "series";
@@ -450,9 +451,15 @@ async function bootstrapCloudSync() {
   if (!firebase.configured) {
     el("sync-status").textContent = "Local";
     const message = firebase.configurationError?.message
-      ?? "Firebase web app config is missing. Set __TC_FIREBASE_CONFIG__ or localStorage.tc_firebase_config to enable cloud sync.";
+      ?? "Firebase is not configured. Local offline storage is active.";
     setInlineStatus(el("auth-status"), `Local mode · ${message}`);
-    if (firebase.configurationError) void showError(firebase.configurationError, "Firebase configuration");
+    if (firebase.configurationError) {
+      void openGlassModal({
+        title: "Cloud Sync Error",
+        body: `<p>Using local offline storage. ${escapeHTML(message)}</p>`,
+        actions: [{ id: "ok", label: "Continue offline", primary: true }]
+      });
+    }
     return;
   }
   try {
@@ -464,7 +471,16 @@ async function bootstrapCloudSync() {
     if (el("sync-status")) el("sync-status").textContent = firebase.online ? "Cloud synced" : "Offline";
   } catch (error) {
     handleFirestoreError(error, "Initial cloud sync");
+    el("sync-status").textContent = "Local";
     setInlineStatus(el("auth-status"), "Local mode · cloud connection is unavailable.");
+    setInlineStatus(el("app-status"), "Cloud sync could not start. Local offline storage is active.");
+    if (!isPermissionDenied(error)) {
+      void openGlassModal({
+        title: "Cloud Sync Error",
+        body: `<p>Using local offline storage. ${escapeHTML(error instanceof Error ? error.message : String(error))}</p>`,
+        actions: [{ id: "ok", label: "Continue offline", primary: true }]
+      });
+    }
   }
 }
 

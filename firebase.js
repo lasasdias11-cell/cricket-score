@@ -1,5 +1,4 @@
-// ⚠️ SECURITY: Do NOT commit your real Firebase apiKey / config to a public GitHub repo.
-// Inject the complete web config at deploy time or store it in localStorage.tc_firebase_config.
+// The app supplies its ignored firebase-config.js; window/localStorage can override it when needed.
 
 export const FIREBASE_PROJECT_ID = "thursday-cricket";
 
@@ -12,7 +11,8 @@ let services = {
   ready: Promise.resolve(false)
 };
 
-function readConfig() {
+function readConfig(configOverride) {
+  if (configOverride) return configOverride;
   if (window.__TC_FIREBASE_CONFIG__) return window.__TC_FIREBASE_CONFIG__;
   try {
     return JSON.parse(localStorage.getItem("tc_firebase_config") ?? "null");
@@ -26,16 +26,19 @@ function updateOnlineStatus() {
   services.online = navigator.onLine;
 }
 
-export function initFirebase() {
-  const config = readConfig();
+export function initFirebase(configOverride) {
+  const config = readConfig(configOverride);
   const sdk = window.firebase;
   if (!config || !sdk?.initializeApp || !sdk?.auth || !sdk?.firestore) {
+    const configurationError = config
+      ? new Error("The Firebase compat SDK did not load. Check the Firebase CDN scripts and network connection.")
+      : null;
     services = {
       auth: null,
       db: null,
       online: navigator.onLine,
       configured: false,
-      configurationError: null,
+      configurationError,
       ready: Promise.resolve(false)
     };
     return services;
@@ -67,6 +70,7 @@ export function initFirebase() {
     window.addEventListener("online", updateOnlineStatus);
     window.addEventListener("offline", updateOnlineStatus);
     services.ready = (async () => {
+      await ensureAnonymousAuth();
       try {
         await db.enablePersistence({ synchronizeTabs: true });
       } catch (error) {
@@ -74,7 +78,6 @@ export function initFirebase() {
           console.warn("Firestore persistence is unavailable; live cloud sync remains enabled.", error);
         }
       }
-      await ensureAnonymousAuth();
       return true;
     })();
   } catch (error) {
@@ -99,6 +102,7 @@ export async function ensureAnonymousAuth() {
   if (!services.auth) throw new Error("Firebase Authentication is not configured.");
   if (services.auth.currentUser) return services.auth.currentUser;
   const credential = await services.auth.signInAnonymously();
+  console.info("Firebase anonymous authentication is ready.");
   return credential.user;
 }
 

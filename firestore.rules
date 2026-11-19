@@ -5,32 +5,13 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    match /teams/{teamId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /matches/{matchId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /players/{playerId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /customTeams/{teamId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /teamVotes/{voteId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /users/{userId} {
-      allow read, write: if isSignedIn();
-    }
-
-    match /{document=**} {
-      allow read, write: if false;
-    }
+    match /teams/{teamId} { allow read, write: if isSignedIn(); }
+    match /matches/{matchId} { allow read, write: if isSignedIn(); }
+    match /players/{playerId} { allow read, write: if isSignedIn(); }
+    match /customTeams/{teamId} { allow read, write: if isSignedIn(); }
+    match /teamVotes/{voteId} { allow read, write: if isSignedIn(); }
+    match /users/{userId} { allow read, write: if isSignedIn(); }
+    
+    match /{document=**} { allow read, write: if false; }
   }
 }
