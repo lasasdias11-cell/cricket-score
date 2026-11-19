@@ -1,7 +1,7 @@
 import { FIREBASE_CONFIG } from "./firebase-config.js";
 import {
-  ensureAnonymousAuth, getFirebaseServices, initFirebase, readFirestoreCollection,
-  registerWithFirebase, signInWithFirebase, signOutFirebase, subscribeFirestoreCollection, writeFirestore
+  initFirebase, observeFirebaseAuth, readFirestoreCollection, registerWithFirebase,
+  signInWithFirebase, signOutFirebase, subscribeFirestoreCollection, updateFirebaseProfile, writeFirestore
 } from "./firebase.js";
 import { createStore, createInitialState, DEFAULT_TEAMS } from "./state.js";
 import {
@@ -16,8 +16,16 @@ import { attachRippleEffect, escapeHTML, openGlassModal, renderRouter, setInline
 import { findSeedPlayer, resolveEmail, resolvePassword, SEED_PLAYERS, SQUAD_TEAMS } from "./seed.js";
 export { SQUAD_TEAMS, SEED_PLAYERS, resolveEmail, resolvePassword } from "./seed.js";
 
+function loadFirebaseModules() {
+  return Promise.all([
+    import("https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"),
+    import("https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"),
+    import("https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js")
+  ]).then(([appSdk, authSdk, firestoreSdk]) => ({ ...appSdk, ...authSdk, ...firestoreSdk }));
+}
+
 attachRippleEffect();
-const firebase = initFirebase(FIREBASE_CONFIG);
+const firebase = initFirebase(FIREBASE_CONFIG, loadFirebaseModules);
 const store = createStore(createInitialState());
 const el = (id) => document.getElementById(id);
 let activeFilter = "series";
@@ -28,6 +36,8 @@ const LOCAL_SESSION_KEY = "tc_session";
 const SYNC_QUEUE_KEY = "tc_sync_queue_v1";
 const FIRESTORE_COLLECTIONS = ["teams", "matches", "players", "customTeams", "teamVotes", "users"];
 const cloudListeners = new Map();
+let stopAuthObserver = null;
+let liveSyncUserId = null;
 let retryTimer = 0;
 let retryInProgress = false;
 let permissionAlertShown = false;
@@ -129,6 +139,13 @@ function errorCode(error) {
   return String(error?.code ?? "").split("/").at(-1);
 }
 
+function friendlyAuthError(error) {
+  if (["admin-restricted-operation", "operation-not-allowed"].includes(errorCode(error))) {
+    return new Error("Enable Email/Password in Firebase Console under Authentication → Sign-in method.");
+  }
+  return error;
+}
+
 function isPermissionDenied(error) {
   return errorCode(error) === "permission-denied";
 }
@@ -166,7 +183,7 @@ function removeQueuedWrite(path) {
 }
 
 function schedulePendingWriteRetry(delay = 15000) {
-  if (retryTimer || !firebase.db) return;
+  if (retryTimer || !firebase.db || !firebase.auth?.currentUser) return;
   retryTimer = window.setTimeout(() => {
     retryTimer = 0;
     void retryPendingWrites();
@@ -174,14 +191,9 @@ function schedulePendingWriteRetry(delay = 15000) {
 }
 
 async function retryPendingWrites() {
-  if (retryInProgress || !firebase.db || !firebase.online) return;
+  if (retryInProgress || !firebase.db || !firebase.online || !firebase.auth?.currentUser) return;
   retryInProgress = true;
   try {
-    try {
-      await firebase.ready;
-    } catch (error) {
-      if (!getFirebaseServices().auth?.currentUser) throw error;
-    }
     const queue = readSyncQueue();
     for (const item of queue) {
       try {
@@ -215,14 +227,8 @@ async function retryPendingWrites() {
 async function syncRemote(path, data) {
   if (!firebase.db) return false;
   try {
-    if (!getFirebaseServices().auth?.currentUser) {
-      try {
-        await firebase.ready;
-      } catch (error) {
-        if (!getFirebaseServices().auth?.currentUser) throw error;
-      }
-      if (!getFirebaseServices().auth?.currentUser) await ensureAnonymousAuth();
-    }
+    if (!firebase.auth?.currentUser) await firebase.ready;
+    if (!firebase.auth?.currentUser) throw new Error("Sign in before syncing data to Firestore.");
     await writeFirestore(path, data);
     removeQueuedWrite(path);
     return true;
@@ -289,7 +295,12 @@ function handleRemotePlayers(records) {
       return { ...team, roster: [...roster.values()] };
     });
     const currentProfile = mergedProfiles.find((profile) => profile.id === state.currentUser?.id);
-    return { ...state, teams, currentUser: currentProfile ? { ...state.currentUser, ...currentProfile } : state.currentUser };
+    return {
+      ...state,
+      players: mergedProfiles,
+      teams,
+      currentUser: currentProfile ? { ...state.currentUser, ...currentProfile } : state.currentUser
+    };
   });
   store.persist();
 }
@@ -338,11 +349,14 @@ const CLOUD_HANDLERS = {
 function stopCloudListeners() {
   for (const unsubscribe of cloudListeners.values()) unsubscribe();
   cloudListeners.clear();
+  liveSyncUserId = null;
 }
 
-function startCloudListeners() {
-  if (!firebase.db || !firebase.auth?.currentUser) return;
+function startLiveFirestoreSync(authUser) {
+  if (!firebase.db || !authUser || firebase.auth?.currentUser?.uid !== authUser.uid) return;
+  if (liveSyncUserId === authUser.uid && cloudListeners.size) return;
   stopCloudListeners();
+  liveSyncUserId = authUser.uid;
   for (const collection of FIRESTORE_COLLECTIONS) {
     const unsubscribe = subscribeFirestoreCollection(
       collection,
@@ -354,10 +368,15 @@ function startCloudListeners() {
           showError(error, `Could not merge ${collection}`);
         }
       },
-      (error) => handleFirestoreError(error, `Listening to ${collection}`)
+      (error) => handleFirestoreError(error, `Listening to ${collection}`),
+      { orderByCreatedAt: collection === "matches" }
     );
     cloudListeners.set(collection, unsubscribe);
   }
+  void syncLocalCollections(authUser).catch((error) => {
+    handleFirestoreError(error, "Cloud sync");
+    setInlineStatus(el("app-status"), "Local data is safe. Cloud sync will retry when available.");
+  });
 }
 
 function makeSeedProfiles() {
@@ -376,7 +395,8 @@ function makeSeedProfiles() {
   });
 }
 
-async function syncLocalCollections() {
+async function syncLocalCollections(authUser) {
+  if (!authUser || firebase.auth?.currentUser?.uid !== authUser.uid) return;
   const snapshots = await Promise.all(FIRESTORE_COLLECTIONS.map((name) => readFirestoreCollection(name)));
   const remoteByName = new Map(FIRESTORE_COLLECTIONS.map((name, index) => [name, snapshots[index]]));
   const teams = remoteByName.get("teams");
@@ -385,10 +405,24 @@ async function syncLocalCollections() {
     if (!remoteTeamIds.has(team.id)) await syncRemote(`teams/${team.id}`, { team, updatedAt: new Date().toISOString() });
   }
 
-  const remoteMatchIds = new Set(remoteByName.get("matches").map((record) => record.match?.id ?? record.id));
+  const remoteMatches = remoteByName.get("matches");
+  const remoteMatchIds = new Set(remoteMatches.map((record) => record.match?.id ?? record.id));
+  for (const record of remoteMatches) {
+    const match = record.match ?? record;
+    if (record.id && !record.createdAt) {
+      await syncRemote(`matches/${record.id}`, {
+        createdAt: match.createdAt ?? record.updatedAt ?? new Date().toISOString()
+      });
+    }
+  }
   for (const match of getMatches()) {
     if (!remoteMatchIds.has(match.id)) {
-      await syncRemote(`matches/${match.id}`, { match, owner: store.getState().currentUser?.id ?? null, updatedAt: new Date().toISOString() });
+      await syncRemote(`matches/${match.id}`, {
+        match,
+        owner: store.getState().currentUser?.id ?? null,
+        createdAt: match.createdAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
     }
   }
 
@@ -448,27 +482,38 @@ async function syncSessionMetadata() {
 }
 
 async function bootstrapCloudSync() {
-  if (!firebase.configured) {
-    el("sync-status").textContent = "Local";
-    const message = firebase.configurationError?.message
-      ?? "Firebase is not configured. Local offline storage is active.";
-    setInlineStatus(el("auth-status"), `Local mode · ${message}`);
-    if (firebase.configurationError) {
-      void openGlassModal({
-        title: "Cloud Sync Error",
-        body: `<p>Using local offline storage. ${escapeHTML(message)}</p>`,
-        actions: [{ id: "ok", label: "Continue offline", primary: true }]
-      });
-    }
-    return;
-  }
   try {
-    await firebase.ready;
-    if (!firebase.auth?.currentUser) await ensureAnonymousAuth();
-    startCloudListeners();
-    await syncLocalCollections();
-    await retryPendingWrites();
-    if (el("sync-status")) el("sync-status").textContent = firebase.online ? "Cloud synced" : "Offline";
+    const initialized = await firebase.ready;
+    if (!initialized || !firebase.auth) {
+      el("sync-status").textContent = "Local";
+      const message = firebase.configurationError?.message
+        ?? "Sign in to enable cloud sync. Local offline storage is active.";
+      setInlineStatus(el("auth-status"), `Local mode · ${message}`);
+      if (firebase.configurationError) {
+        void openGlassModal({
+          title: "Cloud Sync Error",
+          body: `<p>Using local offline storage. ${escapeHTML(message)}</p>`,
+          actions: [{ id: "ok", label: "Continue offline", primary: true }]
+        });
+      }
+      return;
+    }
+
+    stopAuthObserver?.();
+    stopAuthObserver = observeFirebaseAuth((user) => {
+      if (!user) {
+        stopCloudListeners();
+        el("sync-status").textContent = "Local";
+        setInlineStatus(el("auth-status"), "Sign in to enable cloud sync.");
+        return;
+      }
+      el("sync-status").textContent = firebase.online ? "Connecting…" : "Offline";
+      startLiveFirestoreSync(user);
+    }, (error) => {
+      handleFirestoreError(error, "Firebase authentication");
+      el("sync-status").textContent = "Local";
+      void showError(error, "Cloud authentication failed");
+    });
   } catch (error) {
     handleFirestoreError(error, "Initial cloud sync");
     el("sync-status").textContent = "Local";
@@ -484,24 +529,17 @@ async function bootstrapCloudSync() {
   }
 }
 
-async function activateCloudSync() {
-  if (!firebase.db || !firebase.auth?.currentUser) return;
-  startCloudListeners();
-  try {
-    await syncLocalCollections();
-    await retryPendingWrites();
-  } catch (error) {
-    handleFirestoreError(error, "Cloud sync");
-    if (!error?.code) void showError(error, "Could not synchronize local data");
-    setInlineStatus(el("app-status"), "Local data is safe. Cloud sync will retry when available.");
-  }
-}
-
 window.addEventListener("online", () => {
+  if (!firebase.auth && firebase.configurationError) {
+    initFirebase(FIREBASE_CONFIG, loadFirebaseModules);
+    void bootstrapCloudSync();
+    return;
+  }
   void retryPendingWrites();
-  if (firebase.db) {
-    if (firebase.auth?.currentUser) startCloudListeners();
-    else void bootstrapCloudSync();
+  if (firebase.auth?.currentUser) {
+    void syncLocalCollections(firebase.auth.currentUser).catch((error) => {
+      handleFirestoreError(error, "Cloud sync");
+    });
   }
 });
 
@@ -1029,10 +1067,16 @@ function persistCurrentMatch(match) {
       : [...state.matches, match]
   }));
   const owner = store.getState().currentUser?.id;
-  if (owner) void syncRemote(`matches/${match.id}`, { match, owner, updatedAt: new Date().toISOString() });
+  if (owner) void syncRemote(`matches/${match.id}`, {
+    match, owner, createdAt: match.createdAt ?? new Date().toISOString(), updatedAt: new Date().toISOString()
+  });
 }
 
 function persistPlayer(profile) {
+  updateState((state) => ({
+    ...state,
+    players: [...(state.players ?? []).filter((player) => player.id !== profile.id), profile]
+  }));
   void syncRemote(`players/${profile.id}`, { profile, owner: store.getState().currentUser?.id ?? null });
 }
 
@@ -1062,10 +1106,17 @@ async function registerPlayer(event) {
 
   let firebaseUser = null;
   let firebaseError = null;
+  try { await firebase.ready; } catch (error) { firebaseError = error; }
   if (firebase.auth) {
-    try { await firebase.ready; } catch (error) { firebaseError = error; }
     try {
       firebaseUser = await registerWithFirebase(email, password);
+    } catch (error) {
+      firebaseError = error;
+    }
+  }
+  if (firebaseUser) {
+    try {
+      await updateFirebaseProfile(firebaseUser, { displayName: name });
       firebaseError = null;
     } catch (error) {
       firebaseError = error;
@@ -1089,7 +1140,6 @@ async function registerPlayer(event) {
   closeAuthSections();
   persistPlayer(profile);
   await syncSessionMetadata();
-  await activateCloudSync();
   if (firebaseError && !firebaseUser) setInlineStatus(el("app-status"), "Firebase was unavailable; the player profile is saved on this device.");
   renderLoginPlayers();
   el("username-select").value = name;
@@ -1108,13 +1158,25 @@ async function loginPlayer(event) {
   el("login-password").value = password;
   let firebaseUser = null;
   let firebaseError = null;
+  let createdAccount = false;
+  try { await firebase.ready; } catch (error) { firebaseError = error; }
   if (firebase.auth) {
-    try { await firebase.ready; } catch (error) { firebaseError = error; }
     try {
       firebaseUser = await signInWithFirebase(email, password);
+    } catch (error) {
+      if (!["user-not-found", "invalid-credential"].includes(errorCode(error))) throw friendlyAuthError(error);
+      try {
+        firebaseUser = await registerWithFirebase(email, password);
+        createdAccount = true;
+      } catch (registerError) {
+        throw friendlyAuthError(registerError);
+      }
+    }
+    try {
+      await updateFirebaseProfile(firebaseUser, { displayName: username });
       firebaseError = null;
     } catch (error) {
-      firebaseError = error;
+      throw friendlyAuthError(error);
     }
   }
   const users = readLocalUsers();
@@ -1141,7 +1203,13 @@ async function loginPlayer(event) {
   localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify({ username, teamId: team.id, email, ts: Date.now() }));
   closeAuthSections();
   if (profile.name) addPlayerToTeam(profile);
-  setInlineStatus(el("login-status"), firebaseUser ? "Signed in. Cloud sync is available." : "Signed in locally. Changes stay on this device.");
+  setInlineStatus(el("login-status"), firebaseUser
+    ? `${createdAccount ? "Account created. " : ""}Signed in. Cloud sync is available.`
+    : "Signed in locally. Changes stay on this device.");
+  if (firebaseUser) {
+    persistPlayer(profile);
+    await syncSessionMetadata();
+  }
   if (firebaseError) {
     await openGlassModal({
       title: "Offline sign-in",
@@ -1149,7 +1217,6 @@ async function loginPlayer(event) {
       actions: [{ id: "continue", label: "Continue", primary: true }]
     });
   }
-  await activateCloudSync();
 }
 
 async function advancedLogin() {
@@ -1158,11 +1225,10 @@ async function advancedLogin() {
   if (!email || !password) throw new TypeError("Enter an advanced email and password.");
   let firebaseUser = null;
   let firebaseError = null;
+  try { await firebase.ready; } catch (error) { firebaseError = error; }
   if (firebase.auth) {
-    try { await firebase.ready; } catch (error) { firebaseError = error; }
     try {
       firebaseUser = await signInWithFirebase(email, password);
-      firebaseError = null;
     } catch (error) {
       firebaseError = error;
     }
@@ -1190,7 +1256,10 @@ async function advancedLogin() {
   updateState((state) => ({ ...state, currentUser: { ...profile, id: firebaseUser?.uid ?? profile.id }, currentPage: "dashboard" }));
   localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify({ username: profile.name, teamId: profile.teamId, email, ts: Date.now() }));
   closeAuthSections();
-  await activateCloudSync();
+  if (firebaseUser) {
+    persistPlayer({ ...profile, id: firebaseUser.uid });
+    await syncSessionMetadata();
+  }
   if (firebaseError) await showError(new Error("Firebase sign-in failed; the saved local profile was used."), "Offline sign-in");
 }
 
@@ -1198,7 +1267,6 @@ async function signOut() {
   let signOutError;
   try {
     await signOutFirebase();
-    if (firebase.auth) await ensureAnonymousAuth();
   } catch (error) {
     signOutError = error;
   }
@@ -1243,7 +1311,12 @@ async function beginMatch(event) {
   viewingInnings = 0;
   const note = match.mode === "retrospective" ? "Enter the scorecard in the post-match panel." : "Match is ready. Select players to start scoring.";
   setInlineStatus(el("app-status"), note);
-  void syncRemote(`matches/${match.id}`, { match, owner: store.getState().currentUser?.id, updatedAt: new Date().toISOString() });
+  void syncRemote(`matches/${match.id}`, {
+    match,
+    owner: store.getState().currentUser?.id,
+    createdAt: match.createdAt,
+    updatedAt: new Date().toISOString()
+  });
 }
 
 function selectedPlayers() {

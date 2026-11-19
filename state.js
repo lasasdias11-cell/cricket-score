@@ -24,6 +24,7 @@ export function createInitialState() {
     currentUser: null,
     currentPage: "dashboard",
     teams: DEFAULT_TEAMS.map((team) => ({ ...team, roster: team.roster.map((player) => ({ ...player })) })),
+    players: [],
     matches: [],
     activeMatchId: null
   };
@@ -63,6 +64,9 @@ export function createStore(initialState = createInitialState()) {
       }
       if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.matches)) {
         throw new TypeError("Saved scoreboard data has an unsupported shape.");
+      }
+      if (parsed.players !== undefined && !Array.isArray(parsed.players)) {
+        throw new TypeError("Saved player data has an unsupported shape.");
       }
       state = { ...createInitialState(), ...parsed };
       for (const listener of listeners) listener(state);
