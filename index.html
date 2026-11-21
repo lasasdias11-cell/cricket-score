@@ -19,6 +19,23 @@
     <div class="splash-wave"></div>
     <img src="assets/logo.png" alt="Logo" class="splash-logo">
   </div>
+  <script>
+    (function() {
+      console.log('DOM inline script: starting 4s splash timeout...');
+      setTimeout(function() {
+        var splash = document.getElementById('splash-screen');
+        if (splash) {
+          console.log('4 seconds passed. Fading out splash screen...');
+          splash.style.opacity = '0';
+          splash.style.pointerEvents = 'none';
+          setTimeout(function() {
+            splash.style.display = 'none';
+            console.log('Splash screen destroyed. UI should be visible.');
+          }, 800);
+        }
+      }, 4000);
+    })();
+  </script>
 
   <div class="bg" aria-hidden="true"><div class="bg-glow"></div><div class="bg-grid"></div></div>
   <div id="ripple-layer" class="ripple-layer" aria-hidden="true"></div>

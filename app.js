@@ -32,6 +32,38 @@ const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// ============================================================================
+// TASK 1: Cinematic 4-Second Splash Screen Timeout
+// ============================================================================
+function triggerSplashTimeout() {
+  console.log('Starting 4s splash timeout...');
+  setTimeout(() => {
+    const splash = document.getElementById('splash-screen');
+    if (splash) {
+      console.log('4 seconds passed. Fading out splash screen...');
+      splash.style.opacity = '0';
+      splash.style.pointerEvents = 'none';
+
+      setTimeout(() => {
+        splash.style.display = 'none';
+        console.log('Splash screen destroyed. UI should be visible.');
+      }, 800);
+    } else {
+      console.warn('Splash screen element not found!');
+    }
+  }, 4000);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  console.log('DOM Loaded. Starting 4s splash timeout...');
+  triggerSplashTimeout();
+});
+
+if (document.readyState === 'interactive' || document.readyState === 'complete') {
+  console.log('DOM already loaded when module started. Starting 4s splash timeout...');
+  triggerSplashTimeout();
+}
+
 // Consolidated from effects.js
 let modalResolver;
 let modalReturnFocus;
@@ -945,38 +977,52 @@ function setInlineStatus(element, message = "", kind = "info") {
 
 
 function initSplashScreen() {
-  const splash = document.getElementById("splash-screen");
-  if (!splash) return;
-  setTimeout(() => {
-    splash.style.opacity = "0";
-    setTimeout(() => {
-      splash.style.display = "none";
-    }, 800);
-  }, 4000);
+  // Handled by top-level bulletproof triggerSplashTimeout()
 }
 
 function showApp(profile) {
+  console.log("showApp called. Transitioning UI to Dashboard for:", profile?.name);
   if (profile) {
     updateState((state) => ({ ...state, currentUser: profile, currentPage: "dashboard" }));
   }
   const loginSection = document.getElementById("login-section") || document.getElementById("auth-screen");
-  if (loginSection) loginSection.classList.add("hidden");
+  if (loginSection) {
+    loginSection.classList.add("hidden");
+    loginSection.style.display = "none";
+  }
   const mainApp = document.getElementById("main-app");
-  if (mainApp) mainApp.classList.remove("hidden");
+  if (mainApp) {
+    mainApp.classList.remove("hidden");
+    mainApp.style.display = "";
+  }
   const dashboardSection = document.getElementById("dashboard-section");
-  if (dashboardSection) dashboardSection.classList.remove("hidden");
+  if (dashboardSection) {
+    dashboardSection.classList.remove("hidden");
+    dashboardSection.style.display = "";
+  }
   renderAll();
+  renderRouter("dashboard");
 }
 
 function showLogin() {
+  console.log("showLogin called. Transitioning UI to Login Screen.");
   updateState((state) => ({ ...state, currentUser: null, currentPage: "dashboard" }));
   localStorage.removeItem(LOCAL_SESSION_KEY);
   const loginSection = document.getElementById("login-section") || document.getElementById("auth-screen");
-  if (loginSection) loginSection.classList.remove("hidden");
+  if (loginSection) {
+    loginSection.classList.remove("hidden");
+    loginSection.style.display = "";
+  }
   const mainApp = document.getElementById("main-app");
-  if (mainApp) mainApp.classList.add("hidden");
+  if (mainApp) {
+    mainApp.classList.add("hidden");
+    mainApp.style.display = "none";
+  }
   const dashboardSection = document.getElementById("dashboard-section");
-  if (dashboardSection) dashboardSection.classList.add("hidden");
+  if (dashboardSection) {
+    dashboardSection.classList.add("hidden");
+    dashboardSection.style.display = "none";
+  }
   renderAll();
 }
 
@@ -2673,6 +2719,10 @@ function wireEvents() {
       e.stopPropagation();
       const username = el("username-select")?.value;
       console.log("Sign-in form submitted:", { username });
+      if (!username) {
+        setInlineStatus(el("login-status"), "Please select your player name.", "error");
+        return;
+      }
       try {
         await handlePlayerLogin(username);
       } catch (error) {
@@ -2686,6 +2736,11 @@ function wireEvents() {
       e.preventDefault();
       e.stopPropagation();
       const username = el("username-select")?.value;
+      console.log("Sign-in button clicked:", { username });
+      if (!username) {
+        setInlineStatus(el("login-status"), "Please select your player name.", "error");
+        return;
+      }
       try {
         await handlePlayerLogin(username);
       } catch (error) {
