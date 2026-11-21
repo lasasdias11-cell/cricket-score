@@ -6,7 +6,8 @@
   <meta name="theme-color" content="#09131d">
   <meta name="description" content="Thursday Cricket — familiar squad scoring with live match tools.">
   <title>Thursday Cricket</title>
-  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="effects.css">
@@ -15,12 +16,12 @@
   <div class="bg" aria-hidden="true"><div class="bg-glow"></div><div class="bg-grid"></div></div>
   <div id="ripple-layer" class="ripple-layer" aria-hidden="true"></div>
   <div id="app">
-    <section id="auth-screen" class="auth-screen">
+    <section id="login-section" class="auth-screen">
       <div class="glass-card auth-card">
         <p class="eyebrow">YOUR SQUAD. YOUR SCOREBOARD.</p>
         <h1>Thursday <span class="accent">Cricket</span></h1>
         <p class="muted">Keep every Thursday match in play.</p>
-        <form id="login-form" class="form-stack" novalidate>
+        <form id="login-form" class="form-stack" novalidate onsubmit="event.preventDefault()">
           <h2>Sign In</h2>
           <label for="username-select">Select Player
             <select id="username-select" name="username" required>

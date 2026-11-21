@@ -526,7 +526,7 @@ function wicketsToAllOut(match, innings) {
 }
 
 function closeInningsIfNeeded(match, innings) {
-  if (innings.wickets >= wicketsToAllOut(match, innings)) innings.endReason = "all-out";
+  if (innings.wickets >= 10 || innings.wickets >= wicketsToAllOut(match, innings)) innings.endReason = "all-out";
   else if (innings.targetType === "chase" && innings.target !== null && innings.score >= innings.target) innings.endReason = "target";
   else if (match.format !== "multi-day" && Number.isInteger(match.overs) && innings.legalBalls >= match.overs * 6) innings.endReason = "overs";
   if (innings.endReason) innings.closed = true;
@@ -965,154 +965,23 @@ function renderRouter(page) {
 
 
 // Consolidated from firebase.js
-// Firebase is loaded dynamically so the app can still start in local-only mode offline.
 const FIREBASE_PROJECT_ID = "thursday-cricket";
 
-const services = {
-  app: null,
-  auth: null,
-  db: null,
-  modules: null,
-  online: navigator.onLine,
-  configured: false,
-  configurationError: null,
-  ready: Promise.resolve(false)
-};
-
-function readConfig(configOverride) {
-  if (configOverride) return configOverride;
-  if (window.__TC_FIREBASE_CONFIG__) return window.__TC_FIREBASE_CONFIG__;
-  try {
-    return JSON.parse(localStorage.getItem("tc_firebase_config") ?? "null");
-  } catch (error) {
-    console.warn("The stored Firebase configuration is invalid.", error);
-    return null;
-  }
-}
-
-function updateOnlineStatus() {
-  services.online = navigator.onLine;
-}
-
-function initFirebase(configOverride, loadModules) {
-  const config = readConfig(configOverride);
-  if (!config) {
-    services.configured = false;
-    services.configurationError = null;
-    services.ready = Promise.resolve(false);
-    return services;
-  }
-  if (config.projectId !== FIREBASE_PROJECT_ID) {
-    const error = new Error(`Firebase must be configured for project "${FIREBASE_PROJECT_ID}".`);
-    services.configured = false;
-    services.configurationError = error;
-    services.ready = Promise.resolve(false);
-    return services;
-  }
-  if (typeof config.apiKey !== "string" || !config.apiKey.trim() || typeof config.appId !== "string" || !config.appId.trim()) {
-    const error = new Error("Provide the Firebase web app apiKey and appId for project thursday-cricket.");
-    services.configured = false;
-    services.configurationError = error;
-    services.ready = Promise.resolve(false);
-    return services;
-  }
-  if (typeof loadModules !== "function") {
-    const error = new TypeError("A Firebase modular SDK loader is required.");
-    services.configured = false;
-    services.configurationError = error;
-    services.ready = Promise.resolve(false);
-    return services;
-  }
-
-  services.configured = true;
-  services.configurationError = null;
-  services.ready = (async () => {
-    const modules = await loadModules();
-    const existingApp = modules.getApps().find((item) => item.name === "[DEFAULT]");
-    services.app = existingApp ?? modules.initializeApp(config);
-    services.auth = modules.getAuth(services.app);
-    services.db = modules.getFirestore(services.app);
-    services.modules = modules;
-    window.addEventListener("online", updateOnlineStatus);
-    window.addEventListener("offline", updateOnlineStatus);
-
-    try {
-      await modules.enableMultiTabIndexedDbPersistence(services.db);
-    } catch (error) {
-      if (!["failed-precondition", "unimplemented"].includes(error?.code)) {
-        console.warn("Firestore persistence is unavailable; live cloud sync remains enabled.", error);
-      }
+try {
+  enableMultiTabIndexedDbPersistence(db).catch((error) => {
+    if (!["failed-precondition", "unimplemented"].includes(error?.code)) {
+      console.warn("Firestore persistence notice:", error);
     }
-    return true;
-  })().catch((error) => {
-    services.configured = false;
-    services.configurationError = error;
-    throw error;
   });
-  return services;
+} catch (e) {
+  // Ignore in unsupported environments
 }
 
-function observeFirebaseAuth(onChange, onError) {
-  if (!services.auth || typeof onChange !== "function") {
-    throw new TypeError("Firebase Authentication and an auth-state callback are required.");
-  }
-  return services.modules.onAuthStateChanged(services.auth, onChange, onError);
-}
-
-async function writeFirestore(path, data) {
-  if (!services.db) throw new Error("Firebase Firestore is not configured.");
-  const segments = String(path).split("/").filter(Boolean);
-  if (segments.length < 2 || segments.length % 2 !== 0) {
-    throw new TypeError("Firestore path must identify a document.");
-  }
-  const reference = services.modules.doc(services.db, ...segments);
-  await services.modules.setDoc(reference, { ...data }, { merge: true });
-}
-
-async function readFirestoreCollection(name) {
-  if (!services.db) throw new Error("Firebase Firestore is not configured.");
-  const snapshot = await services.modules.getDocs(services.modules.collection(services.db, String(name)));
-  return snapshot.docs.map((document) => ({ ...document.data(), id: document.id }));
-}
-
-function subscribeFirestoreCollection(name, onRecords, onError, options = {}) {
-  if (!services.db) throw new Error("Firebase Firestore is not configured.");
-  if (typeof onRecords !== "function" || typeof onError !== "function") {
-    throw new TypeError("Firestore snapshot callbacks are required.");
-  }
-  const reference = services.modules.collection(services.db, String(name));
-  const target = options.orderByCreatedAt
-    ? services.modules.query(reference, services.modules.orderBy("createdAt", "desc"))
-    : reference;
-  return services.modules.onSnapshot(
-    target,
-    (snapshot) => onRecords(snapshot.docs.map((document) => ({ ...document.data(), id: document.id }))),
-    onError
-  );
-}
-
-async function signInWithFirebase(email, password) {
-  if (!services.auth) throw new Error("Firebase Authentication is not configured.");
-  const credential = await services.modules.signInWithEmailAndPassword(services.auth, email, password);
-  return credential.user;
-}
-
-async function registerWithFirebase(email, password) {
-  if (!services.auth) throw new Error("Firebase Authentication is not configured.");
-  const credential = await services.modules.createUserWithEmailAndPassword(services.auth, email, password);
-  return credential.user;
-}
-
-async function updateFirebaseProfile(user, profile) {
-  if (!services.auth || !user) throw new Error("A signed-in Firebase user is required.");
-  await services.modules.updateProfile(user, profile);
-}
-
-async function signOutFirebase() {
-  if (services.auth?.currentUser) await services.modules.signOut(services.auth);
-}
-function loadFirebaseModules() {
-  return Promise.resolve({
+const services = {
+  app,
+  auth,
+  db,
+  modules: {
     initializeApp,
     getApps,
     getAuth,
@@ -1130,7 +999,80 @@ function loadFirebaseModules() {
     orderBy,
     getDocs,
     enableMultiTabIndexedDbPersistence
-  });
+  },
+  online: navigator.onLine,
+  configured: true,
+  configurationError: null,
+  ready: Promise.resolve(true)
+};
+
+function updateOnlineStatus() {
+  services.online = navigator.onLine;
+}
+window.addEventListener("online", updateOnlineStatus);
+window.addEventListener("offline", updateOnlineStatus);
+
+function initFirebase(configOverride, loadModules) {
+  return services;
+}
+
+function observeFirebaseAuth(onChange, onError) {
+  if (typeof onChange !== "function") {
+    throw new TypeError("An auth-state callback is required.");
+  }
+  return onAuthStateChanged(auth, onChange, onError);
+}
+
+async function writeFirestore(path, data) {
+  const segments = String(path).split("/").filter(Boolean);
+  if (segments.length < 2 || segments.length % 2 !== 0) {
+    throw new TypeError("Firestore path must identify a document.");
+  }
+  const reference = doc(db, ...segments);
+  await setDoc(reference, { ...data }, { merge: true });
+}
+
+async function readFirestoreCollection(name) {
+  const snapshot = await getDocs(collection(db, String(name)));
+  return snapshot.docs.map((document) => ({ ...document.data(), id: document.id }));
+}
+
+function subscribeFirestoreCollection(name, onRecords, onError, options = {}) {
+  if (typeof onRecords !== "function" || typeof onError !== "function") {
+    throw new TypeError("Firestore snapshot callbacks are required.");
+  }
+  const reference = collection(db, String(name));
+  const target = options.orderByCreatedAt
+    ? query(reference, orderBy("createdAt", "desc"))
+    : reference;
+  return onSnapshot(
+    target,
+    (snapshot) => onRecords(snapshot.docs.map((document) => ({ ...document.data(), id: document.id }))),
+    onError
+  );
+}
+
+async function signInWithFirebase(email, password) {
+  const credential = await signInWithEmailAndPassword(auth, email, password);
+  return credential.user;
+}
+
+async function registerWithFirebase(email, password) {
+  const credential = await createUserWithEmailAndPassword(auth, email, password);
+  return credential.user;
+}
+
+async function updateFirebaseProfile(user, profile) {
+  if (!user) throw new Error("A signed-in Firebase user is required.");
+  await updateProfile(user, profile);
+}
+
+async function signOutFirebase() {
+  if (auth.currentUser) await signOut(auth);
+}
+
+function loadFirebaseModules() {
+  return Promise.resolve(services.modules);
 }
 
 attachRippleEffect();
@@ -1962,6 +1904,7 @@ function renderLive() {
   const active = innings === activeInnings(match);
   const closed = innings.closed || match.completed || !active;
   el("live-end-innings").disabled = closed;
+  el("live-end-innings").textContent = match.format === "multi-day" ? "Declare Innings" : "End Innings";
   runButtons.forEach((button) => { button.disabled = closed; });
   el("undo-ball").disabled = match.completed || !active || !innings.history?.length;
   el("swap-strike").disabled = closed || !innings.strikerId || !innings.nonStrikerId;
@@ -2123,11 +2066,14 @@ function renderSettings() {
 function renderAll() {
   const state = store.getState();
   const signedIn = Boolean(state.currentUser);
-  el("auth-screen").classList.toggle("hidden", signedIn);
-  el("main-app").classList.toggle("hidden", !signedIn);
+  const loginSection = document.getElementById("login-section") || document.getElementById("auth-screen");
+  if (loginSection) loginSection.classList.toggle("hidden", signedIn);
+  const mainApp = document.getElementById("main-app");
+  if (mainApp) mainApp.classList.toggle("hidden", !signedIn);
   renderTeamOptions();
   if (!signedIn) return;
-  el("whoami").textContent = state.currentUser.name;
+  document.getElementById("dashboard-section")?.classList.remove("hidden");
+  if (el("whoami")) el("whoami").textContent = state.currentUser.name;
   renderDashboard();
   renderLive();
   renderAnalysis();
@@ -2136,7 +2082,7 @@ function renderAll() {
   const theme = localStorage.getItem("tc_theme") || "theme-default-glass-dark";
   document.documentElement.classList.remove("theme-default-glass-dark", "theme-neon-cyberpunk", "theme-emerald-pitch", "theme-midnight-apex");
   document.documentElement.classList.add(theme);
-  el("theme-select").value = theme;
+  if (el("theme-select")) el("theme-select").value = theme;
   for (const card of document.querySelectorAll(".theme-card")) card.classList.toggle("is-active", card.dataset.theme === theme);
   updateSetupFormat();
 }
@@ -2228,37 +2174,47 @@ async function registerPlayer(event) {
   updateSelectedPlayer();
 }
 
-async function loginPlayer(username) {
+async function handlePlayerLogin(username) {
   const select = el("username-select");
   const option = [...select.options].find((item) => item.value === username) ?? select.selectedOptions[0];
   username = option?.value;
   const teamKey = option?.dataset.team;
   if (!username || !teamKey) throw new TypeError("Select your player name before signing in.");
   const email = resolveEmail(username, teamKey);
-  const password = getEffectivePassword(teamKey);
+  const password = resolvePassword(teamKey);
+  console.log("Login attempt:", { username, email });
   let firebaseUser = null;
-  let firebaseError = null;
   let createdAccount = false;
-  try { await firebase.ready; } catch (error) { firebaseError = error; }
-  if (firebase.auth) {
-    try {
-      firebaseUser = await signInWithFirebase(email, password);
-    } catch (error) {
-      if (!["user-not-found", "invalid-credential"].includes(errorCode(error))) throw friendlyAuthError(error);
+
+  try {
+    firebaseUser = await signInWithFirebase(email, password);
+  } catch (error) {
+    const code = error?.code || errorCode(error);
+    console.warn("Sign-in failed, checking self-healing fallback:", code, error);
+    if (["auth/user-not-found", "user-not-found", "auth/invalid-credential", "invalid-credential", "auth/invalid-login-credentials", "invalid-login-credentials"].includes(code)) {
       try {
         firebaseUser = await registerWithFirebase(email, password);
         createdAccount = true;
       } catch (registerError) {
-        throw friendlyAuthError(registerError);
+        if (registerError?.code === "auth/email-already-in-use") {
+          firebaseUser = await signInWithFirebase(email, password);
+        } else {
+          throw friendlyAuthError(registerError);
+        }
       }
-    }
-    try {
-      await updateFirebaseProfile(firebaseUser, { displayName: username });
-      firebaseError = null;
-    } catch (error) {
+    } else {
       throw friendlyAuthError(error);
     }
   }
+
+  if (firebaseUser) {
+    try {
+      await updateFirebaseProfile(firebaseUser, { displayName: username });
+    } catch (error) {
+      console.warn("Could not set profile displayName:", error);
+    }
+  }
+
   const users = readLocalUsers();
   const seed = findSeedPlayer(username);
   const team = SQUAD_TEAMS[teamKey];
@@ -2281,21 +2237,27 @@ async function loginPlayer(username) {
   const profile = { ...account.profile, id: firebaseUser?.uid ?? account.profile.id, name: username, email, teamId: team.id };
   updateState((state) => ({ ...state, currentUser: profile, currentPage: "dashboard" }));
   localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify({ username, teamId: team.id, email, ts: Date.now() }));
+  localStorage.setItem("tc_last_user", username);
   closeAuthSections();
   if (profile.name) addPlayerToTeam(profile);
+
+  // CRITICAL REQUIREMENT 4: UI Transition to Dashboard
+  const loginSection = document.getElementById("login-section") || document.getElementById("auth-screen");
+  if (loginSection) loginSection.classList.add("hidden");
+  const mainApp = document.getElementById("main-app");
+  if (mainApp) mainApp.classList.remove("hidden");
+  const dashboardSection = document.getElementById("dashboard-section");
+  if (dashboardSection) dashboardSection.classList.remove("hidden");
+
+  renderAll();
+
   setInlineStatus(el("login-status"), firebaseUser
     ? `${createdAccount ? "Account created. " : ""}Signed in. Cloud sync is available.`
     : "Signed in locally. Changes stay on this device.");
+
   if (firebaseUser) {
     persistPlayer(profile);
     await syncSessionMetadata();
-  }
-  if (firebaseError) {
-    await openGlassModal({
-      title: "Offline sign-in",
-      body: `<p>Firebase sign-in was unavailable, so ${escapeHTML(username)} was signed in locally on this device.</p>`,
-      actions: [{ id: "continue", label: "Continue", primary: true }]
-    });
   }
 }
 
@@ -2350,11 +2312,22 @@ async function signOut() {
   } catch (error) {
     signOutError = error;
   }
-  updateState((state) => ({ ...state, currentUser: null }));
+  updateState((state) => ({ ...state, currentUser: null, currentPage: "dashboard" }));
   localStorage.removeItem(LOCAL_SESSION_KEY);
   closeAuthSections();
-  el("login-form").reset();
+  const form = el("login-form");
+  if (form) form.reset();
   updateSelectedPlayer();
+  stopCloudListeners();
+
+  const loginSection = document.getElementById("login-section") || document.getElementById("auth-screen");
+  if (loginSection) loginSection.classList.remove("hidden");
+  const mainApp = document.getElementById("main-app");
+  if (mainApp) mainApp.classList.add("hidden");
+  const dashboardSection = document.getElementById("dashboard-section");
+  if (dashboardSection) dashboardSection.classList.add("hidden");
+
+  renderAll();
   void syncSessionMetadata();
   if (signOutError) await showError(signOutError, "Signed out locally");
 }
@@ -2458,15 +2431,17 @@ async function endCurrentInnings() {
   const match = getActiveMatch();
   const innings = activeInnings(match);
   if (!innings) throw new Error("There is no active innings.");
+  const isMultiDay = match.format === "multi-day";
+  const actionLabel = isMultiDay ? "Declare Innings" : "End Innings";
   const result = await openGlassModal({
-    title: "End this innings?",
+    title: isMultiDay ? "Declare this innings?" : "End this innings?",
     body: `<p>${escapeHTML(teamById(innings.battingTeamId)?.name)} finish on <strong>${innings.score}/${innings.wickets}</strong>.</p>`,
-    actions: [{ id: "cancel", label: "Keep scoring" }, { id: "end", label: "End innings", primary: true }]
+    actions: [{ id: "cancel", label: "Keep scoring" }, { id: "end", label: actionLabel, primary: true }]
   });
   if (result !== "end") return;
-  endInnings(match);
+  endInnings(match, "declared");
   persistCurrentMatch(match);
-  setInlineStatus(el("app-status"), `Innings ${match.activeInnings + 1} declared.`);
+  setInlineStatus(el("app-status"), `Innings ${match.activeInnings + 1} ${isMultiDay ? "declared" : "ended"}.`);
   await maybeOfferFollowOn(match);
 }
 
@@ -2475,19 +2450,20 @@ function maybeOfferFollowOn(match) {
   const second = match.innings[1];
   if (match.format !== "multi-day" || match.followOnOffered || match.followOnEnforced ||
       match.innings.length !== 2 || !first || !second || !second.closed ||
-      second.endReason !== "all-out" || first.battingTeamId !== match.teamA.id ||
-      second.battingTeamId !== match.teamB.id) return Promise.resolve();
+      second.endReason !== "all-out") return Promise.resolve();
   const threshold = match.days === 3 || match.days === 4 ? 150 : 200;
   const lead = first.score - second.score;
   if (lead < threshold) return Promise.resolve();
   match.followOnOffered = true;
   persistCurrentMatch(match);
+  const team1 = teamById(first.battingTeamId)?.name ?? "Team 1";
+  const team2 = teamById(second.battingTeamId)?.name ?? "Team 2";
   return openGlassModal({
     title: "Enforce Follow-On?",
-    body: `<p>Team B must bat again immediately. Team A leads by ${lead} runs; the follow-on threshold is ${threshold}.</p>`,
+    body: `<p><strong>${escapeHTML(team1)}</strong> leads by <strong>${lead}</strong> runs (follow-on threshold: ${threshold} runs).</p><p>Would you like to enforce the follow-on and make <strong>${escapeHTML(team2)}</strong> bat again?</p>`,
     actions: [
-      { id: "no", label: "No, continue normally" },
-      { id: "yes", label: "Enforce follow-on", primary: true }
+      { id: "no", label: "No (Bat 3rd Innings)" },
+      { id: "yes", label: "Enforce Follow-On", primary: true }
     ]
   }).then((choice) => {
     if (choice !== "yes") return;
@@ -2495,7 +2471,7 @@ function maybeOfferFollowOn(match) {
     startNextInnings(match);
     viewingInnings = match.activeInnings;
     persistCurrentMatch(match);
-    setInlineStatus(el("app-status"), "Follow-on enforced. Team B has started innings 3.");
+    setInlineStatus(el("app-status"), `Follow-on enforced. ${team2} has started innings 3.`);
   });
 }
 
@@ -2637,15 +2613,32 @@ function printReport() {
 }
 
 function wireEvents() {
-  el("login-form").addEventListener("submit", runSafely((event) => {
-    event.preventDefault();
-    return loginPlayer(el("username-select").value);
-  }));
-  el("username-select").addEventListener("change", runSafely((event) => {
-    updateSelectedPlayer();
-    const username = event.target.value;
-    if (username) return loginPlayer(username);
-  }));
+  const loginForm = el("login-form");
+  if (loginForm) {
+    loginForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = el("username-select")?.value;
+      console.log("Sign-in form submitted:", { username });
+      try {
+        await handlePlayerLogin(username);
+      } catch (error) {
+        await showError(error, "Sign-in failed");
+      }
+    });
+  }
+  const loginSubmit = el("login-submit");
+  if (loginSubmit) {
+    loginSubmit.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const username = el("username-select")?.value;
+      try {
+        await handlePlayerLogin(username);
+      } catch (error) {
+        await showError(error, "Sign-in failed");
+      }
+    });
+  }
+  el("username-select").addEventListener("change", runSafely(() => updateSelectedPlayer()));
   document.querySelectorAll(".toggle-link").forEach((button) => {
     button.addEventListener("click", () => toggleAuthSection(button.dataset.target, button));
   });
@@ -2766,7 +2759,10 @@ function wireEvents() {
   el("print-report").addEventListener("click", runSafely(printReport));
 }
 
+let isAppInitialized = false;
 function initialize() {
+  if (isAppInitialized) return;
+  isAppInitialized = true;
   wireEvents();
   const lastUser = localStorage.getItem("tc_last_user");
   if (lastUser && [...el("username-select").options].some((option) => option.value === lastUser)) {
@@ -2780,8 +2776,14 @@ function initialize() {
   }
   store.subscribe(renderAll);
   renderAll();
-  if (!firebase.auth) setInlineStatus(el("auth-status"), "Local mode · choose a seeded player to continue.");
 }
 
-initialize();
-void bootstrapCloudSync();
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => {
+    initialize();
+    void bootstrapCloudSync();
+  });
+} else {
+  initialize();
+  void bootstrapCloudSync();
+}
