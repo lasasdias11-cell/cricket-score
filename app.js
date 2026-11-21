@@ -103,17 +103,32 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+function safeColor(value, fallback) {
+  return /^#[0-9a-f]{6}$/i.test(value || '') ? value : fallback;
+}
 function fmtDate(ts) {
   try { return new Date(ts).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }); }
   catch (e) { return ''; }
 }
-function toast(msg, type) {
-  const t = document.getElementById('toast');
-  if (!t) return;
-  t.textContent = msg;
-  t.className = 'toast show ' + (type || '');
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => { t.className = 'toast'; }, 3200);
+function openGlassModal(message, type) {
+  const modal = document.getElementById('glass-modal');
+  const title = document.getElementById('glass-modal-title');
+  const content = document.getElementById('glass-modal-message');
+  if (!modal || !title || !content) {
+    console.warn('[Thursday Cricket] Glass modal elements are unavailable.');
+    return;
+  }
+  title.textContent = type === 'error' ? 'Something went wrong' : type === 'success' ? 'Success' : 'Notice';
+  content.textContent = String(message == null ? '' : message);
+  modal.hidden = false;
+  modal.dataset.type = type || 'info';
+  const closeButton = document.getElementById('glass-modal-close');
+  if (closeButton) closeButton.focus();
+}
+
+function closeGlassModal() {
+  const modal = document.getElementById('glass-modal');
+  if (modal) modal.hidden = true;
 }
 function defaultTeams() {
   return Object.fromEntries(Object.values(DEFAULT_TEAMS).map(t => [t.id, Object.assign({}, t, { members: t.members.slice() })]));
@@ -122,6 +137,11 @@ function getTeam(id) {
   return state.teams[id] || defaultTeams()[id] || { id, name: id, short: id.slice(0, 3).toUpperCase(), secretCode: '', members: [], color: '#3b82f6' };
 }
 function memberKey(teamId, member) { return teamId + '__' + member; }
+function loginEmailFor(teamId, member) {
+  const emailName = member.toLowerCase().replace(/[^a-z0-9._+-]/g, '');
+  const emailDomain = teamId.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return emailName + '@' + emailDomain + '.cricket';
+}
 function displayNameOf(teamId, member) {
   const p = state.players[memberKey(teamId, member)];
   if (p && p.displayName) return p.displayName;
@@ -347,7 +367,7 @@ const db = (() => {
     console.error('[Thursday Cricket] ' + label + ' failed:', (e && e.message) || e);
     if (onErrorCb) onErrorCb(true);
     clearTimeout(fail._t);
-    fail._t = setTimeout(() => toast('⚠️ Firestore sync issue — check connection or rules.', 'error'), 300);
+    fail._t = setTimeout(() => openGlassModal('⚠️ Firestore sync issue — check connection or rules.', 'error'), 300);
   }
 
   async function saveTeam(id, data) {
@@ -418,16 +438,21 @@ const db = (() => {
   }
 
   async function deleteMatch(id) {
+    let synced = true;
     try {
       if (mode === 'firestore') {
         await ensureAuth();
         await fs.collection('matches').doc(id).delete();
       }
-    } catch (e) { fail('deleteMatch', e); }
+    } catch (e) {
+      synced = false;
+      fail('deleteMatch', e);
+    }
     finally {
       save(LS.matches, (load(LS.matches) || []).filter(x => x.id !== id));
       if (mode !== 'firestore') emitLocal('matches');
     }
+    return synced;
   }
 
   async function saveVote(teamId, v) {
@@ -589,7 +614,7 @@ async function initSecondInnings(matchId) {
     m.updatedAt = Date.now();
     await db.saveMatch(m);
     renderLiveArea();
-    toast('Switched to 2nd Innings.', 'success');
+    openGlassModal('Switched to 2nd Innings.', 'success');
     return;
   }
 
@@ -627,7 +652,7 @@ async function initSecondInnings(matchId) {
 
   await db.saveMatch(m);
   renderLiveArea();
-  toast('🎯 2nd Innings initialized! Target: ' + target + ' runs.', 'success');
+  openGlassModal('🎯 2nd Innings initialized! Target: ' + target + ' runs.', 'success');
 }
 
 async function setMatchInning(matchId, idx) {
@@ -723,13 +748,13 @@ function restoreUser() {
 }
 
 function populateLoginSelect() {
-  const sel = document.getElementById('login-name');
+  const sel = document.getElementById('username-select');
   if (!sel) return;
   const prev = sel.value;
   const opts = Object.values(state.teams).map(t => {
     const members = t.members || [];
     return '<optgroup label="' + esc(t.name) + '">' +
-      members.map(m => '<option value="' + esc(m) + '">' + esc(displayNameOf(t.id, m)) + '</option>').join('') +
+      members.map(m => '<option value="' + esc(memberKey(t.id, m)) + '" data-team-id="' + esc(t.id) + '" data-member="' + esc(m) + '">' + esc(displayNameOf(t.id, m)) + '</option>').join('') +
     '</optgroup>';
   }).join('');
 
@@ -753,17 +778,39 @@ function populateRegisterTeamSelect() {
   if (prev) sel.value = prev;
 }
 
-function handleLogin(name, code) {
-  if (!name) return toast('Please select your name.', 'error');
-  const team = Object.values(state.teams).find(t => (t.members || []).includes(name));
-  if (!team) return toast('Player "' + esc(name) + '" not found in squad rosters.', 'error');
-  if (team.secretCode !== (code || '').trim()) return toast('Invalid secret code for ' + team.name + '.', 'error');
+async function handleLoginClick() {
+  const sel = document.getElementById('username-select');
+  const selected = sel && sel.options[sel.selectedIndex];
+  if (!selected || !selected.dataset.teamId || !selected.dataset.member) {
+    openGlassModal('Please select your username.', 'error');
+    return;
+  }
 
-  state.user = { teamId: team.id, member: name, displayName: displayNameOf(team.id, name) };
-  persistUser();
-  showSection('dashboard-section');
-  renderAll();
-  toast('Welcome back, ' + state.user.displayName + '! 🏏', 'success');
+  const team = getTeam(selected.dataset.teamId);
+  const member = selected.dataset.member;
+  const email = loginEmailFor(team.id, member);
+  const password = team.secretCode;
+
+  try {
+    if (typeof firebase === 'undefined' || !firebase.auth) {
+      throw new Error('Firebase Authentication is unavailable.');
+    }
+    const auth = firebase.auth();
+    await auth.signInWithEmailAndPassword(email, password);
+    state.user = { teamId: team.id, member, displayName: displayNameOf(team.id, member) };
+    persistUser();
+    showSection('dashboard-section');
+    renderHeader();
+    renderDashboard();
+    renderMatchPanel();
+    renderHistory();
+    renderAnalysis();
+    renderTeam();
+    openGlassModal('Welcome back, ' + state.user.displayName + '! 🏏', 'success');
+  } catch (error) {
+    console.error('[Thursday Cricket] Sign-in failed:', error);
+    openGlassModal('Sign-in failed. Check your username and account credentials, then try again.', 'error');
+  }
 }
 
 function logout() {
@@ -799,11 +846,11 @@ async function registerNewPlayer(e) {
   const tag = (tagEl.value || '').trim();
   const teamId = teamEl.value;
 
-  if (!rawName) return toast('Please enter the player name.', 'error');
-  if (!teamId) return toast('Please select a team.', 'error');
+  if (!rawName) return openGlassModal('Please enter the player name.', 'error');
+  if (!teamId) return openGlassModal('Please select a team.', 'error');
 
   const team = getTeam(teamId);
-  if (!team) return toast('Invalid team selected.', 'error');
+  if (!team) return openGlassModal('Invalid team selected.', 'error');
 
   const pKey = memberKey(teamId, rawName);
   const displayName = tag ? (rawName + ' "' + tag + '"') : rawName;
@@ -824,17 +871,15 @@ async function registerNewPlayer(e) {
   populateLoginSelect();
 
   // Auto-select the newly created player in login dropdown
-  const loginName = document.getElementById('login-name');
-  if (loginName) loginName.value = rawName;
+  const loginName = document.getElementById('username-select');
+  if (loginName) loginName.value = memberKey(teamId, rawName);
 
   // Reset and hide register form
   nameEl.value = '';
   tagEl.value = '';
   toggleRegisterForm();
 
-  toast('🎉 ' + displayName + ' registered to ' + team.name + '! Enter secret code to log in.', 'success');
-  const codeInput = document.getElementById('login-code');
-  if (codeInput) codeInput.focus();
+  openGlassModal('🎉 ' + displayName + ' registered to ' + team.name + '! Sign in with your account credentials.', 'success');
 }
 
 /* ---------- 10. Navigation & Router ---------- */
@@ -893,6 +938,8 @@ function resultOf(m) {
   if (!m.innings || m.innings.length === 0) return null;
 
   const inn1 = m.innings[0];
+  const r1 = inn1.runs || 0;
+  const team1 = getTeam(inn1.battingTeam);
   const inn2 = m.innings[1];
 
   if (!inn2) {
@@ -902,9 +949,7 @@ function resultOf(m) {
     return { draw: false, completed: false, inProgress: true, text: '1st Innings in progress' };
   }
 
-  const r1 = inn1.runs || 0;
   const r2 = inn2.runs || 0;
-  const team1 = getTeam(inn1.battingTeam);
   const team2 = getTeam(inn2.battingTeam);
 
   // If 2nd innings reached target
@@ -967,9 +1012,9 @@ function matchSummaryHTML(m) {
       '<div class="m-top">' +
         '<div><div class="m-name">' + esc(m.name) + '</div><div class="m-date">' + fmtDate(m.createdAt) + ' · ' + modeLabel(m.mode) + '</div></div>' +
         '<div class="row">' + badge +
-          '<button class="btn btn-sm btn-ghost" data-action="open-match" data-id="' + m.id + '">Scorecard →</button>' +
-          (m.status === 'completed' ? '<button class="btn btn-sm btn-ghost" data-action="reopen-match" data-id="' + m.id + '" title="Re-open to edit">✏️</button>' : '') +
-          '<button class="btn btn-sm btn-ghost" data-action="delete-match" data-id="' + m.id + '" title="Delete">🗑</button>' +
+          '<button class="btn btn-sm btn-ghost" data-action="open-match" data-id="' + esc(m.id) + '">Scorecard →</button>' +
+          (m.status === 'completed' ? '<button class="btn btn-sm btn-ghost" data-action="reopen-match" data-id="' + esc(m.id) + '" title="Re-open to edit">✏️</button>' : '') +
+          '<button class="btn btn-sm btn-ghost" data-action="delete-match" data-id="' + esc(m.id) + '" title="Delete">🗑</button>' +
         '</div>' +
       '</div>' +
       '<div class="match-summary">' +
@@ -996,7 +1041,7 @@ function renderDashboard() {
     dashTeam.innerHTML =
       '<h3 class="card-title">Your Team</h3>' +
       '<div class="row">' +
-        '<span class="badge badge-live" style="background:' + team.color + '33;color:' + team.color + '">' + esc(team.name) + '</span>' +
+        '<span class="badge badge-live" style="background:' + safeColor(team.color, '#3b82f6') + '33;color:' + safeColor(team.color, '#3b82f6') + '">' + esc(team.name) + '</span>' +
         (team.captain ? '<span class="badge badge-captain">👑 ' + esc(captainName) + ' (Captain)</span>' : '') +
       '</div>' +
       '<p class="mt" style="font-size:.88rem">👑 <strong>Active Captain:</strong> <span class="accent">' + esc(captainName) + '</span></p>' +
@@ -1135,7 +1180,7 @@ function renderTeamBuilderCard() {
           customTeamsList.map(t =>
             '<div class="team-chip">' +
               '<div class="team-chip-info">' +
-                '<span class="swatch" style="background:' + (t.color || '#3b82f6') + '"></span>' +
+                '<span class="swatch" style="background:' + safeColor(t.color, '#3b82f6') + '"></span>' +
                 '<div>' +
                   '<div class="t-name">' + esc(t.name) + ' (' + esc(t.short) + ')</div>' +
                   '<div class="t-meta">' + (t.members || []).length + ' players · Code: ' + esc(t.secretCode) + '</div>' +
@@ -1163,10 +1208,10 @@ async function handleCreateTeam(e) {
   const memberInputs = Array.from(form.querySelectorAll('.roster-member-input'));
   const members = memberInputs.map(inp => (inp.value || '').trim()).filter(Boolean);
 
-  if (!name) return toast('Please enter a team name.', 'error');
-  if (!shortTag) return toast('Please enter a short tag.', 'error');
-  if (members.length < 2) return toast('A team must have at least 2 players.', 'error');
-  if (code.length < 4) return toast('Secret code must be at least 4 characters.', 'error');
+  if (!name) return openGlassModal('Please enter a team name.', 'error');
+  if (!shortTag) return openGlassModal('Please enter a short tag.', 'error');
+  if (members.length < 2) return openGlassModal('A team must have at least 2 players.', 'error');
+  if (code.length < 4) return openGlassModal('Secret code must be at least 4 characters.', 'error');
 
   const teamId = 'team_' + uid();
   const newTeam = {
@@ -1201,13 +1246,13 @@ async function handleCreateTeam(e) {
   renderTeamBuilderCard();
   renderTeam();
 
-  toast('🛡️ Team "' + name + '" successfully created and synced!', 'success');
+  openGlassModal('🛡️ Team "' + name + '" successfully created and synced!', 'success');
 }
 
 function startMatch() {
   const nameEl = document.getElementById('match-name');
   const name = (nameEl.value || '').trim();
-  if (!name) return toast('Please enter a match name.', 'error');
+  if (!name) return openGlassModal('Please enter a match name.', 'error');
 
   const isCustomMatch = state.matchSetupType === 'custom';
   let t1Id = 'whiteTigers';
@@ -1223,7 +1268,7 @@ function startMatch() {
     maxOvers = ovEl ? parseInt(ovEl.value, 10) || 0 : 0;
 
     if (t1Id === t2Id) {
-      return toast('Team 1 and Team 2 must be different teams.', 'error');
+      return openGlassModal('Team 1 and Team 2 must be different teams.', 'error');
     }
   }
 
@@ -1277,7 +1322,7 @@ function startMatch() {
     if (nameEl) nameEl.value = '';
     showSection('scoreboard-section');
     renderMatchPanel();
-    toast('Match "' + name + '" started — 1st Innings! 🏏', 'success');
+    openGlassModal('Match "' + name + '" started — 1st Innings! 🏏', 'success');
   });
 }
 
@@ -1293,7 +1338,7 @@ async function endMatch(id) {
   renderMatchPanel();
   renderHistory();
   renderAnalysis();
-  toast('Match completed & cloud synced! 🏆', 'success');
+  openGlassModal('Match completed & cloud synced! 🏆', 'success');
 }
 
 async function reopenMatch(id) {
@@ -1304,18 +1349,19 @@ async function reopenMatch(id) {
   state.activeMatchId = id;
   showSection('scoreboard-section');
   renderMatchPanel();
-  toast('Scorecard reopened for editing.', 'success');
+  openGlassModal('Scorecard reopened for editing.', 'success');
 }
 
 async function deleteMatch(id) {
   const m = state.matches.find(x => x.id === id); if (!m) return;
   if (!confirm('Delete match "' + m.name + '"? This cannot be undone.')) return;
-  await db.deleteMatch(id);
+  const synced = await db.deleteMatch(id);
   if (state.activeMatchId === id) state.activeMatchId = null;
+  renderDashboard();
   renderMatchPanel();
   renderHistory();
   renderAnalysis();
-  toast('Match deleted.', 'success');
+  if (synced) openGlassModal('Match deleted.', 'success');
 }
 
 /* ---------- 14. Live Multi-Innings Scoreboard Area ---------- */
@@ -1452,7 +1498,7 @@ function inningCardHTML(m, inn, inningIdx, canEdit) {
   const tid = inn.battingTeam;
   const meta = getTeam(tid);
   const bowlMeta = getTeam(inn.bowlingTeam);
-  const color = meta.color || '#3b82f6';
+  const color = safeColor(meta.color, '#3b82f6');
   const mode = m.mode;
 
   let body = '';
@@ -1667,8 +1713,8 @@ function applyBall(matchId, inningIdx, runs) {
 
   const idx = normalizeStriker(inn);
   const p = inn.players[idx];
-  if (!p) return toast('Please add a batter first.', 'error');
-  if (p.out) return toast(esc(p.name) + ' is out — tap another batter.', 'error');
+  if (!p) return openGlassModal('Please add a batter first.', 'error');
+  if (p.out) return openGlassModal(p.name + ' is out — tap another batter.', 'error');
 
   pushUndo(m.id, inningIdx, inn);
   p.runs = (p.runs || 0) + runs;
@@ -1681,8 +1727,8 @@ function applyBall(matchId, inningIdx, runs) {
   m.updatedAt = Date.now();
 
   markLocalEdit();
-  db.saveMatch(m);
   renderLiveArea();
+  db.saveMatch(m);
 }
 
 function applyWicket(matchId, inningIdx) {
@@ -1695,7 +1741,7 @@ function applyWicket(matchId, inningIdx) {
   const idx = normalizeStriker(inn);
   const p = inn.players[idx];
   if (!p) return;
-  if (p.out) return toast(esc(p.name) + ' is already out.', 'error');
+  if (p.out) return openGlassModal(p.name + ' is already out.', 'error');
 
   pushUndo(m.id, inningIdx, inn);
   p.out = true;
@@ -1707,8 +1753,8 @@ function applyWicket(matchId, inningIdx) {
   m.updatedAt = Date.now();
 
   markLocalEdit();
-  db.saveMatch(m);
   renderLiveArea();
+  db.saveMatch(m);
 }
 
 function setStriker(matchId, inningIdx, idx) {
@@ -1717,7 +1763,7 @@ function setStriker(matchId, inningIdx, idx) {
   ensureMatchInnings(m);
   const inn = m.innings[inningIdx];
   if (!inn || !inn.players[idx]) return;
-  if (inn.players[idx].out) return toast('That batter is out.', 'error');
+  if (inn.players[idx].out) return openGlassModal('That batter is out.', 'error');
 
   inn.striker = idx;
   m.updatedAt = Date.now();
@@ -1730,7 +1776,7 @@ function undoBall(matchId, inningIdx) {
   const m = state.matches.find(x => x.id === matchId);
   if (!m) return;
   const stack = undoStack[m.id] && undoStack[m.id][inningIdx];
-  if (!stack || !stack.length) return toast('Nothing to undo.', 'error');
+  if (!stack || !stack.length) return openGlassModal('Nothing to undo.', 'error');
 
   const snap = stack.pop();
   ensureMatchInnings(m);
@@ -2354,7 +2400,7 @@ function printMatchHTML(m, matchNum) {
     const balls = inn.balls || 0;
     const oversText = balls > 0 ? ' (' + fmtOvers(balls) + ' ov)' : '';
     const targetText = inn.target ? ' · Target: ' + inn.target : '';
-    h += '<div class="print-team-box" style="border-left-color:' + (meta.color || '#0284c7') + '">';
+    h += '<div class="print-team-box" style="border-left-color:' + safeColor(meta.color, '#0284c7') + '">';
     h += '  <div class="print-tb-title">' + esc(meta.name) + ' (Innings ' + inn.inningNum + ')' + targetText + '</div>';
     h += '  <div class="print-tb-score">' + (inn.runs || 0) + '/' + (inn.wickets || 0) + oversText + '</div>';
     h += '</div>';
@@ -2480,7 +2526,7 @@ function buildPrintSummary() {
     const capt = t.captain ? displayNameOf(t.id, t.captain) : 'Not elected';
 
     h += '<tr>';
-    h += '  <td><strong style="color:' + (t.color || '#1e3a8a') + '">' + esc(t.name) + '</strong> (' + esc(t.short) + ')</td>';
+    h += '  <td><strong style="color:' + safeColor(t.color, '#1e3a8a') + '">' + esc(t.name) + '</strong> (' + esc(t.short) + ')</td>';
     h += '  <td>👑 ' + esc(capt) + '</td>';
     h += '  <td>' + ms.length + '</td>';
     h += '  <td><strong>' + runs + '</strong></td>';
@@ -2514,7 +2560,7 @@ function buildPrintSummary() {
 /* ---------- 21. Settings: Team Profile, Captain Election & Secret Code ---------- */
 function saveDisplayName(name) {
   const t = (name || '').trim();
-  if (!t) return toast('Display name cannot be empty.', 'error');
+  if (!t) return openGlassModal('Display name cannot be empty.', 'error');
   const key = memberKey(state.user.teamId, state.user.member);
   state.players[key] = { displayName: t, teamId: state.user.teamId, member: state.user.member };
   state.user.displayName = t;
@@ -2523,7 +2569,7 @@ function saveDisplayName(name) {
   renderHeader();
   renderTeam();
   renderDashboard();
-  toast('Display name updated!', 'success');
+  openGlassModal('Display name updated!', 'success');
 }
 
 function checkVotePassed(teamId, v) {
@@ -2533,16 +2579,16 @@ function checkVotePassed(teamId, v) {
     state.teams[teamId].secretCode = v.proposedCode;
     db.saveTeam(teamId, state.teams[teamId]);
     db.saveVote(teamId, { proposedCode: '', votes: {}, proposedCaptain: v.proposedCaptain || '', captainVotes: v.captainVotes || {} });
-    toast('✅ Secret code changed successfully!', 'success');
+    openGlassModal('✅ Secret code changed successfully!', 'success');
   } else {
-    toast('Vote recorded (' + got + '/' + needed + ').', 'success');
+    openGlassModal('Vote recorded (' + got + '/' + needed + ').', 'success');
   }
 }
 
 function voteForCode(proposed) {
   const teamId = state.user.teamId;
   const clean = (proposed || '').trim();
-  if (clean.length < 4) return toast('Code must be at least 4 characters.', 'error');
+  if (clean.length < 4) return openGlassModal('Code must be at least 4 characters.', 'error');
   const v = state.votes[teamId] || { proposedCode: '', votes: {} };
   if (v.proposedCode !== clean) { v.proposedCode = clean; v.votes = {}; }
   v.votes[state.user.member] = true;
@@ -2553,7 +2599,7 @@ function voteForCode(proposed) {
 function voteYes() {
   const teamId = state.user.teamId;
   const v = state.votes[teamId] || { proposedCode: '', votes: {} };
-  if (!v.proposedCode) return toast('No active code vote.', 'error');
+  if (!v.proposedCode) return openGlassModal('No active code vote.', 'error');
   v.votes[state.user.member] = true;
   db.saveVote(teamId, v);
   checkVotePassed(teamId, v);
@@ -2564,7 +2610,7 @@ function proposeCaptain(candidate) {
   const teamId = u.teamId;
   const team = getTeam(teamId);
   const clean = (candidate || '').trim();
-  if (!(team.members || []).includes(clean)) return toast('Please select a member of your squad.', 'error');
+  if (!(team.members || []).includes(clean)) return openGlassModal('Please select a member of your squad.', 'error');
   const v = state.votes[teamId] || { proposedCode: '', votes: {} };
   if (v.proposedCaptain !== clean) {
     v.proposedCaptain = clean;
@@ -2580,7 +2626,7 @@ function voteCaptainYes() {
   const u = state.user; if (!u) return;
   const teamId = u.teamId;
   const v = state.votes[teamId] || {};
-  if (!v.proposedCaptain) return toast('No active captain election.', 'error');
+  if (!v.proposedCaptain) return openGlassModal('No active captain election.', 'error');
   if (!v.captainVotes) v.captainVotes = {};
   v.captainVotes[u.member] = true;
   db.saveVote(teamId, v);
@@ -2600,10 +2646,10 @@ async function checkCaptainVotePassed(teamId, v) {
     await db.saveVote(teamId, v);
     renderTeam();
     renderDashboard();
-    toast('👑 ' + displayNameOf(teamId, elected) + ' elected as Captain of ' + team.name + '! 🏏', 'success');
+    openGlassModal('👑 ' + displayNameOf(teamId, elected) + ' elected as Captain of ' + team.name + '! 🏏', 'success');
   } else {
     renderTeam();
-    toast('Captain vote recorded (' + got + '/' + needed + ').', 'success');
+    openGlassModal('Captain vote recorded (' + got + '/' + needed + ').', 'success');
   }
 }
 
@@ -2715,7 +2761,7 @@ function renderTeam() {
             customList.map(t =>
               '<div class="team-chip">' +
                 '<div class="team-chip-info">' +
-                  '<span class="swatch" style="background:' + (t.color || '#3b82f6') + '"></span>' +
+                  '<span class="swatch" style="background:' + safeColor(t.color, '#3b82f6') + '"></span>' +
                   '<div>' +
                     '<div class="t-name">' + esc(t.name) + ' (' + esc(t.short) + ')</div>' +
                     '<div class="t-meta">' + (t.members || []).length + ' members · Code: <code>' + esc(t.secretCode) + '</code></div>' +
@@ -2780,7 +2826,7 @@ function globalClick(e) {
     applyTheme(tId);
     renderTeam();
     const tObj = THEMES.find(x => x.id === tId);
-    toast('Theme set to ' + (tObj ? tObj.name : tId) + ' ✨', 'success');
+    openGlassModal('Theme set to ' + (tObj ? tObj.name : tId) + ' ✨', 'success');
     return;
   }
 
@@ -2830,7 +2876,7 @@ function globalClick(e) {
           renderSetupForm();
           renderTeamBuilderCard();
           renderTeam();
-          toast('Team deleted.', 'success');
+          openGlassModal('Team deleted.', 'success');
         });
       }
       break;
@@ -2923,6 +2969,13 @@ function globalChange(e) {
 
 /* ---------- 23. Application Lifecycle Bootstrapper ---------- */
 async function init() {
+  setTimeout(() => {
+    const splash = document.getElementById('splash-screen');
+    if (!splash) return;
+    splash.style.opacity = '0';
+    setTimeout(() => { splash.style.display = 'none'; }, 300);
+  }, 1500);
+
   attachRippleEffect();
   populateLoginSelect();
   populateRegisterTeamSelect();
@@ -2947,9 +3000,19 @@ async function init() {
   if (loginForm) {
     loginForm.addEventListener('submit', e => {
       e.preventDefault();
-      handleLogin(document.getElementById('login-name').value, document.getElementById('login-code').value);
+      handleLoginClick();
     });
   }
+
+  const modalClose = document.getElementById('glass-modal-close');
+  if (modalClose) modalClose.addEventListener('click', closeGlassModal);
+  const modal = document.getElementById('glass-modal');
+  if (modal) modal.addEventListener('click', e => {
+    if (e.target === modal) closeGlassModal();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeGlassModal();
+  });
 
   const regToggle = document.getElementById('register-toggle');
   if (regToggle) regToggle.addEventListener('click', toggleRegisterForm);
@@ -2985,8 +3048,9 @@ async function init() {
     console.error('[Thursday Cricket] Unhandled promise rejection:', e.reason);
   });
 
-  const saved = restoreUser();
-  if (saved) {
+  const authUser = typeof firebase !== 'undefined' && firebase.auth ? firebase.auth().currentUser : null;
+  const saved = authUser && !authUser.isAnonymous ? restoreUser() : null;
+  if (saved && authUser.email === loginEmailFor(saved.teamId, saved.member)) {
     state.user = saved;
     state.user.displayName = displayNameOf(saved.teamId, saved.member);
     showSection('dashboard-section');

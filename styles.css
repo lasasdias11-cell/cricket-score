@@ -30,7 +30,7 @@
   --radius: 20px;
   --radius-sm: 14px;
   --shadow: 0 20px 50px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 /* Theme 2: Neon Cyberpunk */
@@ -174,6 +174,22 @@ code {
 .content { min-height: 60vh; }
 .panel-title { font-size: clamp(1.25rem, 3vw, 1.7rem); margin: 6px 0 18px; font-weight: 800; letter-spacing: -0.3px; }
 
+/* ---------- Splash Screen ---------- */
+#splash-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  text-align: center;
+  background: var(--black);
+  opacity: 1;
+  transition: opacity 300ms ease;
+}
+.splash-logo { font-size: 4rem; }
+.splash-title { color: var(--white); font-size: 1.3rem; font-weight: 800; }
+
 /* ---------- Ultra-Polished Glassmorphism ---------- */
 .glass {
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
@@ -185,6 +201,7 @@ code {
   position: relative;
 }
 .card { padding: 22px; margin-bottom: 20px; }
+.card, .match-item { backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
 .card-title { font-size: 1.1rem; margin-bottom: 14px; font-weight: 800; display: flex; align-items: center; gap: 8px; }
 
 /* ---------- 1. Fluid Water-Ripple Tactile Touch Effect ---------- */
@@ -237,12 +254,16 @@ code {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   min-height: 44px;
 }
+button, .btn, .run-btn {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
 .btn:hover {
   border-color: var(--rim);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 20px rgba(96, 165, 250, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.22);
   transform: translateY(-1px);
 }
-.btn:active { transform: scale(0.97); }
+.btn:active, button:active, .run-btn:active { transform: scale(0.96); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
 .btn-primary {
   background: linear-gradient(135deg, var(--blue), var(--indigo));
@@ -317,6 +338,9 @@ code {
 /* ---------- Login Section ---------- */
 #login-section { display: grid; place-items: center; min-height: 100vh; padding: 20px; }
 .login-card { width: 100%; max-width: 440px; padding: 36px 28px; text-align: center; }
+.advanced-register { text-align: left; }
+.advanced-register > summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; font-weight: 700; }
+.advanced-register[open] > summary { margin-bottom: 12px; }
 .brand { margin-bottom: 24px; }
 .logo {
   font-size: 3rem;
@@ -348,6 +372,8 @@ input, select {
   transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
   appearance: none;
   min-height: 44px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 input:focus, select:focus {
   border-color: var(--cyan);
@@ -745,7 +771,7 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--blue); c
   box-shadow: 0 0 16px rgba(34, 211, 238, 0.35);
   background: rgba(255, 255, 255, 0.12);
 }
-.run-btn:active { transform: scale(0.92); background: var(--blue); }
+.run-btn:active { transform: scale(0.96); background: var(--blue); }
 .run-btn.wicket { background: rgba(248, 113, 113, 0.18); color: var(--danger); border-color: rgba(248, 113, 113, 0.4); }
 .run-btn.wicket:hover { background: rgba(248, 113, 113, 0.3); box-shadow: 0 0 18px rgba(248, 113, 113, 0.45); }
 .run-btn.undo { background: rgba(148, 163, 184, 0.15); color: var(--muted); }
@@ -876,28 +902,28 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--blue); c
 /* ---------- Charts ---------- */
 .chart-wrap { position: relative; height: 260px; }
 
-/* ---------- Toast Notification ---------- */
-.toast {
-  position: fixed; left: 50%; bottom: 26px;
-  transform: translateX(-50%) translateY(20px);
-  background: rgba(10, 18, 38, 0.94);
+/* ---------- Glass Modal ---------- */
+.glass-modal:not([hidden]) {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.62);
+}
+.modal-panel {
+  width: min(100%, 420px);
+  padding: 24px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, rgba(20, 32, 58, 0.92), rgba(8, 14, 28, 0.92));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
-  border-radius: 14px;
-  padding: 12px 22px;
-  font-size: 0.92rem;
-  font-weight: 700;
-  max-width: 90vw;
-  z-index: 1000;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.25s ease, transform 0.25s ease;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
+  box-shadow: var(--shadow);
 }
-.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-.toast.error { border-color: rgba(248, 113, 113, 0.65); color: var(--danger); box-shadow: 0 0 26px rgba(248, 113, 113, 0.3); }
-.toast.success { border-color: rgba(52, 211, 153, 0.65); color: var(--success); box-shadow: 0 0 26px rgba(52, 211, 153, 0.3); }
+.modal-panel h2 { font-size: 1.15rem; }
+.modal-panel p { margin-top: 10px; color: var(--muted); overflow-wrap: anywhere; }
 
 /* Progress bar */
 .progress { height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
@@ -1023,7 +1049,7 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--blue); c
     print-color-adjust: exact !important;
     color-adjust: exact !important;
   }
-  .bg, #app, .toast { display: none !important; }
+  .bg, #app, .glass-modal, #splash-screen { display: none !important; }
   body {
     background: #f8fafc !important;
     color: #0f172a !important;

@@ -8,9 +8,17 @@
   <title>Thursday Cricket · Live Scoring & Multi-Innings</title>
   <link rel="preconnect" href="https://www.gstatic.com" crossorigin />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <div id="splash-screen" role="status" aria-label="Loading Thursday Cricket">
+    <div class="splash-logo">🏏</div>
+    <div class="splash-title">Thursday Cricket</div>
+  </div>
+
   <!-- Floating animated ambient canvas -->
   <div class="bg" aria-hidden="true">
     <div class="blob blob-1"></div>
@@ -31,33 +39,32 @@
         </div>
         <form id="login-form" autocomplete="off" novalidate>
           <label class="field">
-            <span>Player ID (Name)</span>
-            <select id="login-name" required></select>
+            <span>Username</span>
+            <select id="username-select" required></select>
           </label>
-          <label class="field">
-            <span>Team Secret Code</span>
-            <input id="login-code" type="password" placeholder="••••••••" autocomplete="off" required />
-          </label>
-          <button type="submit" class="btn btn-primary btn-block">Enter Scoreboard</button>
+          <button type="button" class="btn btn-primary btn-block" onclick="handleLoginClick()">Sign In</button>
         </form>
-        <button id="register-toggle" class="btn btn-ghost btn-block mt" type="button">+ Register New Player</button>
-        <form id="register-form" class="hidden mt" data-form="register" autocomplete="off" novalidate>
-          <label class="field">
-            <span>Player Name</span>
-            <input id="reg-name" type="text" maxlength="40" placeholder="e.g. Nuwan Perera" required />
-          </label>
-          <label class="field">
-            <span>Player Tag / Nickname</span>
-            <input id="reg-tag" type="text" maxlength="30" placeholder="e.g. The Finisher" />
-          </label>
-          <label class="field">
-            <span>Assign Team</span>
-            <select id="reg-team" required></select>
-          </label>
-          <button type="submit" class="btn btn-primary btn-block">Create Player Profile</button>
-        </form>
+        <details class="advanced-register mt">
+          <summary>Advanced / Register</summary>
+          <button id="register-toggle" class="btn btn-ghost btn-block mt" type="button">+ Register New Player</button>
+          <form id="register-form" class="hidden mt" data-form="register" autocomplete="off" novalidate>
+            <label class="field">
+              <span>Player Name</span>
+              <input id="reg-name" type="text" maxlength="40" placeholder="e.g. Nuwan Perera" required />
+            </label>
+            <label class="field">
+              <span>Player Tag / Nickname</span>
+              <input id="reg-tag" type="text" maxlength="30" placeholder="e.g. The Finisher" />
+            </label>
+            <label class="field">
+              <span>Assign Team</span>
+              <select id="reg-team" required></select>
+            </label>
+            <button type="submit" class="btn btn-primary btn-block">Create Player Profile</button>
+          </form>
+        </details>
         <p id="login-sync" class="sync-status local">● Connecting…</p>
-        <p class="hint">Default codes — White Tigers: <code>White@tiger</code> · Black Panthers: <code>Black@panthers</code></p>
+        <p class="hint">Choose your username to access your registered cricket account.</p>
       </div>
     </section>
 
@@ -172,7 +179,13 @@
     </main>
   </div>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="glass-modal" class="glass-modal" role="dialog" aria-modal="true" aria-labelledby="glass-modal-title" aria-describedby="glass-modal-message" hidden>
+    <div class="modal-panel">
+      <h2 id="glass-modal-title">Notice</h2>
+      <p id="glass-modal-message"></p>
+      <button id="glass-modal-close" class="btn btn-primary btn-block mt" type="button">OK</button>
+    </div>
+  </div>
 
   <!-- Printable report (hidden on screen, shown only when printing) -->
   <div id="print-area" aria-hidden="true"></div>
