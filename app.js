@@ -934,12 +934,50 @@ async function openCustomTeamBuilder() {
 function escapeHTML(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 }
+const esc = escapeHTML;
 
 function setInlineStatus(element, message = "", kind = "info") {
   if (!element) return;
   element.textContent = message;
   element.classList.toggle("inline-error", kind === "error");
   element.setAttribute("role", kind === "error" ? "alert" : "status");
+}
+
+
+function initSplashScreen() {
+  const splash = document.getElementById("splash-screen");
+  if (!splash) return;
+  setTimeout(() => {
+    splash.style.opacity = "0";
+    setTimeout(() => {
+      splash.style.display = "none";
+    }, 800);
+  }, 4000);
+}
+
+function showApp(profile) {
+  if (profile) {
+    updateState((state) => ({ ...state, currentUser: profile, currentPage: "dashboard" }));
+  }
+  const loginSection = document.getElementById("login-section") || document.getElementById("auth-screen");
+  if (loginSection) loginSection.classList.add("hidden");
+  const mainApp = document.getElementById("main-app");
+  if (mainApp) mainApp.classList.remove("hidden");
+  const dashboardSection = document.getElementById("dashboard-section");
+  if (dashboardSection) dashboardSection.classList.remove("hidden");
+  renderAll();
+}
+
+function showLogin() {
+  updateState((state) => ({ ...state, currentUser: null, currentPage: "dashboard" }));
+  localStorage.removeItem(LOCAL_SESSION_KEY);
+  const loginSection = document.getElementById("login-section") || document.getElementById("auth-screen");
+  if (loginSection) loginSection.classList.remove("hidden");
+  const mainApp = document.getElementById("main-app");
+  if (mainApp) mainApp.classList.add("hidden");
+  const dashboardSection = document.getElementById("dashboard-section");
+  if (dashboardSection) dashboardSection.classList.add("hidden");
+  renderAll();
 }
 
 function renderRouter(page) {
@@ -1507,49 +1545,54 @@ async function syncSessionMetadata() {
 
 async function bootstrapCloudSync() {
   try {
-    const initialized = await firebase.ready;
-    if (!initialized || !firebase.auth) {
-      el("sync-status").textContent = "Local";
-      const message = firebase.configurationError?.message
-        ?? "Sign in to enable cloud sync. Local offline storage is active.";
-      setInlineStatus(el("auth-status"), `Local mode · ${message}`);
-      if (firebase.configurationError) {
-        void openGlassModal({
-          title: "Cloud Sync Error",
-          body: `<p>Using local offline storage. ${escapeHTML(message)}</p>`,
-          actions: [{ id: "ok", label: "Continue offline", primary: true }]
-        });
-      }
-      return;
-    }
-
     stopAuthObserver?.();
     stopAuthObserver = observeFirebaseAuth((user) => {
       if (!user) {
         stopCloudListeners();
-        el("sync-status").textContent = "Local";
+        if (el("sync-status")) el("sync-status").textContent = "Local";
         setInlineStatus(el("auth-status"), "Sign in to enable cloud sync.");
+        showLogin();
         return;
       }
-      el("sync-status").textContent = firebase.online ? "Connecting…" : "Offline";
+      console.log("onAuthStateChanged: user authenticated", user.uid, user.email);
+      if (el("sync-status")) el("sync-status").textContent = navigator.onLine ? "Cloud synced" : "Offline";
       startLiveFirestoreSync(user);
+
+      // Resolve user profile and gate dashboard view
+      const email = user.email?.toLowerCase();
+      const displayName = user.displayName;
+      const users = readLocalUsers();
+      let account = users.find((item) => item.email?.toLowerCase() === email || (displayName && item.profile?.name?.toLowerCase() === displayName.toLowerCase()));
+      const seed = SEED_PLAYERS.find((p) => resolveEmail(p.username, p.teamKey).toLowerCase() === email || (displayName && p.username.toLowerCase() === displayName.toLowerCase()));
+      const teamKey = seed ? seed.teamKey : (email?.includes("whitetigers") ? "whiteTigers" : "blackPanthers");
+      const team = SQUAD_TEAMS[teamKey] ?? SQUAD_TEAMS.whiteTigers;
+      const playerName = displayName || seed?.username || email?.split("@")[0] || "Player";
+
+      const profile = account?.profile ?? {
+        id: user.uid,
+        name: playerName,
+        email: user.email,
+        role: seed?.role ?? "All-rounder",
+        teamId: team.id,
+        tags: seed?.tags ?? []
+      };
+
+      if (!account) {
+        users.push({ email: user.email, profile });
+        writeLocalUsers(users);
+      }
+
+      addPlayerToTeam(profile);
+      showApp(profile);
     }, (error) => {
       handleFirestoreError(error, "Firebase authentication");
-      el("sync-status").textContent = "Local";
-      void showError(error, "Cloud authentication failed");
+      if (el("sync-status")) el("sync-status").textContent = "Local";
+      showLogin();
     });
   } catch (error) {
     handleFirestoreError(error, "Initial cloud sync");
-    el("sync-status").textContent = "Local";
-    setInlineStatus(el("auth-status"), "Local mode · cloud connection is unavailable.");
-    setInlineStatus(el("app-status"), "Cloud sync could not start. Local offline storage is active.");
-    if (!isPermissionDenied(error)) {
-      void openGlassModal({
-        title: "Cloud Sync Error",
-        body: `<p>Using local offline storage. ${escapeHTML(error instanceof Error ? error.message : String(error))}</p>`,
-        actions: [{ id: "ok", label: "Continue offline", primary: true }]
-      });
-    }
+    if (el("sync-status")) el("sync-status").textContent = "Local";
+    showLogin();
   }
 }
 
@@ -2130,48 +2173,62 @@ async function registerPlayer(event) {
   const localPart = name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "");
   if (!localPart) throw new TypeError("Enter a name containing letters or numbers.");
   const email = `${localPart}@${team.domain}`;
-  const password = getEffectivePassword(teamKey);
+  const password = resolvePassword(teamKey);
 
+  setInlineStatus(el("reg-status"), "Creating player account…");
   let firebaseUser = null;
-  let firebaseError = null;
-  try { await firebase.ready; } catch (error) { firebaseError = error; }
-  if (firebase.auth) {
-    try {
-      firebaseUser = await registerWithFirebase(email, password);
-    } catch (error) {
-      firebaseError = error;
+  try {
+    firebaseUser = await registerWithFirebase(email, password);
+  } catch (error) {
+    if (error?.code === "auth/email-already-in-use") {
+      firebaseUser = await signInWithFirebase(email, password);
+    } else {
+      throw friendlyAuthError(error);
     }
   }
+
   if (firebaseUser) {
     try {
       await updateFirebaseProfile(firebaseUser, { displayName: name });
-      firebaseError = null;
     } catch (error) {
-      firebaseError = error;
+      console.warn("Could not set displayName:", error);
     }
   }
-  const users = readLocalUsers();
-  const existing = users.find((item) => item.email === email);
-  if (existing) throw new Error("A player already uses that name. Sign in with the existing profile.");
-  const id = firebaseUser?.uid ?? `player-${crypto.randomUUID?.() ?? Date.now().toString(36)}`;
+
+  const id = firebaseUser?.uid ?? `player-${Date.now().toString(36)}`;
   const profile = { id, name, email, role, teamId: team.id, tags: [] };
+
+  // Task 3: Save the player to the /players Firestore collection
+  try {
+    await writeFirestore(`players/${id}`, {
+      profile,
+      updatedAt: new Date().toISOString()
+    });
+    console.log("Player profile saved to Firestore /players/" + id);
+  } catch (err) {
+    console.warn("Could not write player to Firestore:", err);
+  }
+
+  const users = readLocalUsers();
   users.push({ email, profile });
   writeLocalUsers(users);
+
   const localPlayers = readCustomPlayers();
   localPlayers.push(profile);
   localStorage.setItem("tc_players", JSON.stringify(localPlayers));
-  updateState((state) => ({ ...state, currentUser: profile, currentPage: "dashboard" }));
+
   localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify({ username: name, teamId: team.id, email, ts: Date.now() }));
+  localStorage.setItem("tc_last_user", name);
+
   updatePlayerProfile(profile.id, profile);
   addPlayerToTeam(profile);
-  setInlineStatus(el("app-status"), firebaseUser ? "Player registered and signed in." : "Player registered. This device is using local storage.");
   closeAuthSections();
+
+  // Log the user in and show the app!
+  showApp(profile);
+
   persistPlayer(profile);
   await syncSessionMetadata();
-  if (firebaseError && !firebaseUser) setInlineStatus(el("app-status"), "Firebase was unavailable; the player profile is saved on this device.");
-  renderLoginPlayers();
-  el("username-select").value = name;
-  updateSelectedPlayer();
 }
 
 async function handlePlayerLogin(username) {
@@ -2261,48 +2318,44 @@ async function handlePlayerLogin(username) {
   }
 }
 
-async function advancedLogin() {
+async function advancedLogin(event) {
+  event?.preventDefault?.();
   const email = el("adv-email").value.trim().toLowerCase();
   const password = el("adv-password").value;
   if (!email || !password) throw new TypeError("Enter an advanced email and password.");
-  let firebaseUser = null;
-  let firebaseError = null;
-  try { await firebase.ready; } catch (error) { firebaseError = error; }
-  if (firebase.auth) {
-    try {
-      firebaseUser = await signInWithFirebase(email, password);
-    } catch (error) {
-      firebaseError = error;
-    }
-  }
+
+  setInlineStatus(el("adv-status"), "Authenticating…");
+  const credential = await signInWithEmailAndPassword(auth, email, password);
+  const firebaseUser = credential.user;
+
   const users = readLocalUsers();
-  const account = users.find((item) => item.email === email);
-  let validLocalCredentials = false;
-  if (account?.passwordHash) {
-    validLocalCredentials = account.passwordHash === await passwordDigest(password);
-  } else if (account?.profile?.teamId) {
-    const teamKey = Object.keys(SQUAD_TEAMS).find((key) => SQUAD_TEAMS[key].id === account.profile.teamId);
-    validLocalCredentials = Boolean(teamKey && password === getEffectivePassword(teamKey));
-  }
-  if (!firebaseUser && !validLocalCredentials) {
-    throw new Error(firebaseError?.message ?? "The advanced email or password is incorrect.");
-  }
+  let account = users.find((item) => item.email === email);
+  const teamKey = email.includes("whitetigers") ? "whiteTigers" : "blackPanthers";
+  const team = SQUAD_TEAMS[teamKey] ?? SQUAD_TEAMS.whiteTigers;
+  const name = firebaseUser.displayName || email.split("@")[0];
+
   const profile = account?.profile ?? {
     id: firebaseUser.uid,
-    name: email.split("@")[0],
+    name,
     email,
     role: "All-rounder",
-    teamId: currentTeams[0]?.id ?? DEFAULT_TEAMS[0].id,
+    teamId: team.id,
     tags: []
   };
-  updateState((state) => ({ ...state, currentUser: { ...profile, id: firebaseUser?.uid ?? profile.id }, currentPage: "dashboard" }));
+
+  if (!account) {
+    users.push({ email, profile });
+    writeLocalUsers(users);
+  }
+
   localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify({ username: profile.name, teamId: profile.teamId, email, ts: Date.now() }));
   closeAuthSections();
-  if (firebaseUser) {
-    persistPlayer({ ...profile, id: firebaseUser.uid });
-    await syncSessionMetadata();
-  }
-  if (firebaseError) await showError(new Error("Firebase sign-in failed; the saved local profile was used."), "Offline sign-in");
+  addPlayerToTeam(profile);
+
+  showApp(profile);
+
+  persistPlayer(profile);
+  await syncSessionMetadata();
 }
 
 async function signOut() {
@@ -2617,6 +2670,7 @@ function wireEvents() {
   if (loginForm) {
     loginForm.addEventListener("submit", async (e) => {
       e.preventDefault();
+      e.stopPropagation();
       const username = el("username-select")?.value;
       console.log("Sign-in form submitted:", { username });
       try {
@@ -2630,6 +2684,7 @@ function wireEvents() {
   if (loginSubmit) {
     loginSubmit.addEventListener("click", async (e) => {
       e.preventDefault();
+      e.stopPropagation();
       const username = el("username-select")?.value;
       try {
         await handlePlayerLogin(username);
@@ -2642,8 +2697,56 @@ function wireEvents() {
   document.querySelectorAll(".toggle-link").forEach((button) => {
     button.addEventListener("click", () => toggleAuthSection(button.dataset.target, button));
   });
-  el("adv-submit").addEventListener("click", runSafely(advancedLogin));
-  el("reg-submit").addEventListener("click", runSafely(registerPlayer));
+
+  const advForm = el("adv-form");
+  if (advForm) {
+    advForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        await advancedLogin(e);
+      } catch (error) {
+        await showError(error, "Advanced Login failed");
+      }
+    });
+  }
+  const advSubmit = el("adv-submit");
+  if (advSubmit) {
+    advSubmit.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        await advancedLogin(e);
+      } catch (error) {
+        await showError(error, "Advanced Login failed");
+      }
+    });
+  }
+
+  const regForm = el("reg-form");
+  if (regForm) {
+    regForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        await registerPlayer(e);
+      } catch (error) {
+        await showError(error, "Registration failed");
+      }
+    });
+  }
+  const regSubmit = el("reg-submit");
+  if (regSubmit) {
+    regSubmit.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        await registerPlayer(e);
+      } catch (error) {
+        await showError(error, "Registration failed");
+      }
+    });
+  }
   el("logout-button").addEventListener("click", runSafely(signOut));
   el("brand-link").addEventListener("click", (event) => {
     event.preventDefault();
@@ -2763,6 +2866,7 @@ let isAppInitialized = false;
 function initialize() {
   if (isAppInitialized) return;
   isAppInitialized = true;
+  initSplashScreen();
   wireEvents();
   const lastUser = localStorage.getItem("tc_last_user");
   if (lastUser && [...el("username-select").options].some((option) => option.value === lastUser)) {

@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#09131d">
   <meta name="description" content="Thursday Cricket — familiar squad scoring with live match tools.">
   <title>Thursday Cricket</title>
+  <link rel="icon" type="image/png" href="assets/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -13,6 +14,12 @@
   <link rel="stylesheet" href="effects.css">
 </head>
 <body>
+  <!-- Cinematic 4-second Motion Splash Screen -->
+  <div id="splash-screen">
+    <div class="splash-wave"></div>
+    <img src="assets/logo.png" alt="Logo" class="splash-logo">
+  </div>
+
   <div class="bg" aria-hidden="true"><div class="bg-glow"></div><div class="bg-grid"></div></div>
   <div id="ripple-layer" class="ripple-layer" aria-hidden="true"></div>
   <div id="app">
@@ -22,6 +29,7 @@
         <h1>Thursday <span class="accent">Cricket</span></h1>
         <p class="muted">Keep every Thursday match in play.</p>
         <form id="login-form" class="form-stack" novalidate onsubmit="event.preventDefault()">
+          <img src="assets/logo.png" alt="Logo" class="login-logo">
           <h2>Sign In</h2>
           <label for="username-select">Select Player
             <select id="username-select" name="username" required>
@@ -47,21 +55,23 @@
           <button type="button" class="toggle-link" data-target="register-section">▸ Register New Player Profile</button>
         </div>
         <div id="advanced-section" class="collapsible-content" inert aria-hidden="true">
-          <div class="collapsible-inner form-stack">
+          <form id="adv-form" class="collapsible-inner form-stack" novalidate onsubmit="event.preventDefault()">
             <hr class="divider"><h3>Advanced Login</h3>
-            <label>Email<input id="adv-email" type="email" placeholder="you@domain" autocomplete="email"></label>
-            <label>Password<input id="adv-password" type="password" placeholder="password" autocomplete="current-password"></label>
-            <button type="button" id="adv-submit" class="btn btn-secondary">Use Email Instead</button>
-          </div>
+            <label>Email<input id="adv-email" type="email" placeholder="you@domain" autocomplete="email" required></label>
+            <label>Password<input id="adv-password" type="password" placeholder="password" autocomplete="current-password" required></label>
+            <button type="submit" id="adv-submit" class="btn btn-secondary">Use Email Instead</button>
+            <p id="adv-status" class="status-inline" role="status" aria-live="polite"></p>
+          </form>
         </div>
         <div id="register-section" class="collapsible-content" inert aria-hidden="true">
-          <div class="collapsible-inner form-stack">
+          <form id="reg-form" class="collapsible-inner form-stack" novalidate onsubmit="event.preventDefault()">
             <hr class="divider"><h3>New Player Profile</h3>
-            <label>Name<input id="reg-name" type="text" placeholder="Your Name" maxlength="40"></label>
-            <label>Team<select id="reg-team"></select></label>
+            <label>Name<input id="reg-name" type="text" placeholder="Your Name" maxlength="40" required></label>
+            <label>Team<select id="reg-team" required></select></label>
             <label>Role<select id="reg-role"><option value="Batter">Batter</option><option value="Bowler">Bowler</option><option value="All-Rounder">All-Rounder</option></select></label>
-            <button type="button" id="reg-submit" class="btn btn-primary">Register &amp; Join Team</button>
-          </div>
+            <button type="submit" id="reg-submit" class="btn btn-primary">Register &amp; Join Team</button>
+            <p id="reg-status" class="status-inline" role="status" aria-live="polite"></p>
+          </form>
         </div>
         <p id="auth-status" class="status-inline" role="status">Choose a player to continue.</p>
       </div>
@@ -69,7 +79,10 @@
 
     <div id="main-app" class="hidden">
       <header id="topbar" class="topbar glass">
-        <a id="brand-link" class="brand-mini" href="#dashboard-section" aria-label="Thursday Cricket home"><span class="brand-mark">TC</span><span>Thursday Cricket</span></a>
+        <a id="brand-link" class="brand-mini" href="#dashboard-section" aria-label="Thursday Cricket home">
+          <img src="assets/logo.png" alt="Logo" class="nav-logo">
+          <span>Thursday Cricket</span>
+        </a>
         <nav id="main-nav" class="nav" aria-label="Main navigation">
           <button class="nav-btn is-active" data-page="dashboard-section" type="button"><span class="nav-icon">⌂</span><span class="nav-text">Home</span></button>
           <button class="nav-btn" data-page="match-setup-section" type="button"><span class="nav-icon">＋</span><span class="nav-text">Match</span></button>
