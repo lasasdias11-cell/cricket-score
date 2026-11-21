@@ -1,258 +1,187 @@
-<!doctype html>
-<html lang="en" class="theme-default-glass-dark">
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#09131d">
-  <meta name="description" content="Thursday Cricket — familiar squad scoring with live match tools.">
-  <title>Thursday Cricket</title>
-  <link rel="icon" type="image/png" href="assets/logo.png">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="effects.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#05070d" />
+  <meta name="description" content="Thursday Cricket — Multi-Innings, Live Scoring, Ball-by-Ball Analysis & Dynamic Squads." />
+  <title>Thursday Cricket · Live Scoring & Multi-Innings</title>
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <!-- Cinematic 4-second Motion Splash Screen -->
-  <div id="splash-screen">
-    <div class="splash-wave"></div>
-    <img src="assets/logo.png" alt="Logo" class="splash-logo">
+  <!-- Floating animated ambient canvas -->
+  <div class="bg" aria-hidden="true">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+    <div class="bg-grid"></div>
   </div>
-  <script>
-    (function() {
-      console.log('DOM inline script: starting 4s splash timeout...');
-      setTimeout(function() {
-        var splash = document.getElementById('splash-screen');
-        if (splash) {
-          console.log('4 seconds passed. Fading out splash screen...');
-          splash.style.opacity = '0';
-          splash.style.pointerEvents = 'none';
-          setTimeout(function() {
-            splash.style.display = 'none';
-            console.log('Splash screen destroyed. UI should be visible.');
-          }, 800);
-        }
-      }, 4000);
-    })();
-  </script>
 
-  <div class="bg" aria-hidden="true"><div class="bg-glow"></div><div class="bg-grid"></div></div>
-  <div id="ripple-layer" class="ripple-layer" aria-hidden="true"></div>
-  <div id="app">
-    <section id="login-section" class="auth-screen">
-      <div class="glass-card auth-card">
-        <p class="eyebrow">YOUR SQUAD. YOUR SCOREBOARD.</p>
-        <h1>Thursday <span class="accent">Cricket</span></h1>
-        <p class="muted">Keep every Thursday match in play.</p>
-        <div id="login-form" class="form-stack">
-          <img src="assets/logo.png" alt="Logo" class="login-logo">
-          <h2>Sign In</h2>
-          <label for="username-select">Select Player
-            <select id="username-select" name="username" required>
-              <option value="">Choose your player</option>
-              <optgroup label="White Tigers">
-                <option data-team="whiteTigers" value="Dilusha">Dilusha</option>
-                <option data-team="whiteTigers" value="Isala">Isala</option>
-                <option data-team="whiteTigers" value="Anuk">Anuk</option>
-              </optgroup>
-              <optgroup label="Black Panthers">
-                <option data-team="blackPanthers" value="Jevon">Jevon</option>
-                <option data-team="blackPanthers" value="Lasas">Lasas</option>
-                <option data-team="blackPanthers" value="Shenal">Shenal</option>
-              </optgroup>
-            </select>
+  <div id="app" class="app">
+
+    <!-- ============ LOGIN ============ -->
+    <section id="login-section" class="section">
+      <div class="glass card login-card">
+        <div class="brand">
+          <div class="logo">🏏</div>
+          <h1>Thursday Cricket</h1>
+          <p class="tagline">Multi-innings live scoring for your squad</p>
+        </div>
+        <form id="login-form" autocomplete="off" novalidate>
+          <label class="field">
+            <span>Player ID (Name)</span>
+            <select id="login-name" required></select>
           </label>
-          <div id="team-badge" class="badge" hidden></div>
-          <button type="button" id="sign-in-btn" class="btn btn-primary" onclick="handleLoginClick()">
-              Sign In →
-          </button>
-          <p id="login-status" class="status-inline" role="status" aria-live="polite"></p>
-        </div>
-        <div class="auth-toggles">
-          <button type="button" class="toggle-link" data-target="advanced-section">▸ Advanced (email login)</button>
-          <button type="button" class="toggle-link" data-target="register-section">▸ Register New Player Profile</button>
-        </div>
-        <div id="advanced-section" class="collapsible-content" inert aria-hidden="true">
-          <form id="adv-form" class="collapsible-inner form-stack" novalidate onsubmit="event.preventDefault()">
-            <hr class="divider"><h3>Advanced Login</h3>
-            <label>Email<input id="adv-email" type="email" placeholder="you@domain" autocomplete="email" required></label>
-            <label>Password<input id="adv-password" type="password" placeholder="password" autocomplete="current-password" required></label>
-            <button type="submit" id="adv-submit" class="btn btn-secondary">Use Email Instead</button>
-            <p id="adv-status" class="status-inline" role="status" aria-live="polite"></p>
-          </form>
-        </div>
-        <div id="register-section" class="collapsible-content" inert aria-hidden="true">
-          <form id="reg-form" class="collapsible-inner form-stack" novalidate onsubmit="event.preventDefault()">
-            <hr class="divider"><h3>New Player Profile</h3>
-            <label>Name<input id="reg-name" type="text" placeholder="Your Name" maxlength="40" required></label>
-            <label>Team<select id="reg-team" required></select></label>
-            <label>Role<select id="reg-role"><option value="Batter">Batter</option><option value="Bowler">Bowler</option><option value="All-Rounder">All-Rounder</option></select></label>
-            <button type="submit" id="reg-submit" class="btn btn-primary">Register &amp; Join Team</button>
-            <p id="reg-status" class="status-inline" role="status" aria-live="polite"></p>
-          </form>
-        </div>
-        <p id="auth-status" class="status-inline" role="status">Choose a player to continue.</p>
+          <label class="field">
+            <span>Team Secret Code</span>
+            <input id="login-code" type="password" placeholder="••••••••" autocomplete="off" required />
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Enter Scoreboard</button>
+        </form>
+        <button id="register-toggle" class="btn btn-ghost btn-block mt" type="button">+ Register New Player</button>
+        <form id="register-form" class="hidden mt" data-form="register" autocomplete="off" novalidate>
+          <label class="field">
+            <span>Player Name</span>
+            <input id="reg-name" type="text" maxlength="40" placeholder="e.g. Nuwan Perera" required />
+          </label>
+          <label class="field">
+            <span>Player Tag / Nickname</span>
+            <input id="reg-tag" type="text" maxlength="30" placeholder="e.g. The Finisher" />
+          </label>
+          <label class="field">
+            <span>Assign Team</span>
+            <select id="reg-team" required></select>
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Create Player Profile</button>
+        </form>
+        <p id="login-sync" class="sync-status local">● Connecting…</p>
+        <p class="hint">Default codes — White Tigers: <code>White@tiger</code> · Black Panthers: <code>Black@panthers</code></p>
       </div>
     </section>
 
-    <div id="main-app" class="hidden">
-      <header id="topbar" class="topbar glass">
-        <a id="brand-link" class="brand-mini" href="#dashboard-section" aria-label="Thursday Cricket home">
-          <img src="assets/logo.png" alt="Logo" class="nav-logo">
-          <span>Thursday Cricket</span>
-        </a>
-        <nav id="main-nav" class="nav" aria-label="Main navigation">
-          <button class="nav-btn is-active" data-page="dashboard-section" type="button"><span class="nav-icon">⌂</span><span class="nav-text">Home</span></button>
-          <button class="nav-btn" data-page="match-setup-section" type="button"><span class="nav-icon">＋</span><span class="nav-text">Match</span></button>
-          <button class="nav-btn" data-page="scoreboard-section" type="button"><span class="nav-icon">●</span><span class="nav-text">Scoreboard</span></button>
-          <button class="nav-btn" data-page="analysis-section" type="button"><span class="nav-icon">▥</span><span class="nav-text">Analysis</span></button>
-          <button class="nav-btn" data-page="settings-section" type="button"><span class="nav-icon">⚙</span><span class="nav-text">Settings</span></button>
-        </nav>
-        <div class="topbar-right">
-          <span id="sync-status" class="sync-status">Local</span>
-          <span id="whoami" class="whoami"></span>
-          <button id="logout-button" class="btn btn-ghost" type="button">Sign out</button>
-        </div>
-      </header>
-      <main class="content">
-        <p id="app-status" class="status-inline" role="status" aria-live="polite"></p>
+    <!-- ============ TOP BAR ============ -->
+    <header id="topbar" class="topbar glass hidden">
+      <div class="brand-mini">🏏 <span>Thursday Cricket</span></div>
+      <nav class="nav" id="main-nav">
+        <button data-section="dashboard-section" class="nav-btn is-active" title="Dashboard">
+          <span class="nav-icon">🏠</span>
+          <span class="nav-text">Home</span>
+        </button>
+        <button data-section="match-setup-section" class="nav-btn" title="Start Match">
+          <span class="nav-icon">🏏</span>
+          <span class="nav-text">Match</span>
+        </button>
+        <button data-section="scoreboard-section" class="nav-btn" title="Live &amp; Scoreboard">
+          <span class="nav-icon">📡</span>
+          <span class="nav-text">Scoreboard</span>
+        </button>
+        <button data-section="analysis-section" class="nav-btn" title="Analysis &amp; Awards">
+          <span class="nav-icon">📊</span>
+          <span class="nav-text">Analysis</span>
+        </button>
+        <button data-section="settings-section" class="nav-btn" title="Team Settings">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-text">Settings</span>
+        </button>
+      </nav>
+      <div class="topbar-right">
+        <span id="sync-status" class="sync-status local" title="Sync mode"></span>
+        <span id="whoami" class="whoami"></span>
+        <button id="logout-btn" class="btn btn-ghost btn-sm" type="button" title="Sign out">
+          <span class="btn-icon">🚪</span>
+          <span class="btn-text">Logout</span>
+        </button>
+      </div>
+    </header>
 
-        <section id="dashboard-section" class="page-section classic-section">
-          <h2 class="panel-title">Welcome back, <span id="dash-name" class="accent"></span></h2>
+    <div id="sync-error" class="sync-error hidden">⚠️ Can't reach Firestore — deploy <code>firestore.rules</code> and enable the <strong>Anonymous</strong> auth provider.</div>
+
+    <main class="content">
+
+        <!-- Dashboard -->
+        <div id="dashboard-section" class="section hidden">
+          <h2 class="panel-title">Welcome back, <span id="dash-name" class="accent"></span> 👋</h2>
           <div class="grid grid-2">
             <div class="glass card" id="dash-team-card"></div>
             <div class="glass card" id="dash-live"></div>
           </div>
           <div class="glass card" id="dash-recent"></div>
-          <div class="action-row"><button id="home-new-match" class="btn btn-primary" type="button">＋ New Match</button><button id="home-live-match" class="btn btn-secondary" type="button">Open Scoreboard</button></div>
-        </section>
+        </div>
 
-        <section id="match-setup-section" class="page-section classic-section hidden">
+        <!-- Match setup -->
+        <div id="match-setup-section" class="section hidden">
           <h2 class="panel-title">Start a Match</h2>
-          <div id="match-setup">
-          <form id="setup-form" class="glass card setup-card" novalidate>
-            <div class="field-label">Match format</div>
-            <div class="mode-group">
-              <label class="mode-option"><input type="radio" name="mode-choice" value="quick"><span>Quick</span></label>
-              <label class="mode-option"><input type="radio" name="mode-choice" value="live" checked><span>Detailed</span></label>
-              <label class="mode-option"><input type="radio" name="mode-choice" value="retrospective"><span>Retro</span></label>
-              <label class="mode-option"><input type="radio" name="mode-choice" value="post-detailed"><span>Post-Detailed</span></label>
-            </div>
-            <select id="setup-mode" name="mode" class="visually-hidden" tabindex="-1" aria-hidden="true">
-              <option value="quick">Quick</option><option value="live">Detailed</option><option value="retrospective">Retro</option><option value="multi-innings">Post-Detailed</option>
-            </select>
-            <fieldset class="team-type-group"><legend>Teams</legend>
-              <div class="segmented"><label><input type="radio" name="team-type" value="standard" checked><span>Standard teams</span></label><label><input type="radio" name="team-type" value="custom"><span>Custom teams</span></label></div>
-            </fieldset>
-            <div class="setup-grid">
-              <label>Team A<select id="setup-team-a" name="teamA" required></select></label>
-              <label>Team B<select id="setup-team-b" name="teamB" required></select></label>
-              <label>Match format<select id="match-format" name="format"><option value="limited-overs">Limited Overs (T20/ODI)</option><option value="multi-day">Multi-Day (Test)</option></select></label>
-              <label id="overs-field">Overs per innings<select id="setup-overs" name="overs"><option value="5">5 overs</option><option value="10" selected>10 overs</option><option value="15">15 overs</option><option value="20">20 overs</option><option value="custom">Custom</option></select></label>
-              <label id="custom-overs-wrap" class="hidden">Custom overs<input id="custom-overs" type="number" min="1" max="50" value="8"></label>
-              <label id="match-days-field" class="hidden">Match days<select id="match-days" name="days"><option value="1">1 day</option><option value="2">2 days</option><option value="3">3 days</option><option value="4" selected>4 days</option><option value="5">5 days</option></select></label>
-              <label id="max-innings-field" class="hidden">Maximum innings<select id="match-max-innings" name="maxInnings"><option value="2">2 innings</option><option value="3">3 innings</option><option value="4" selected>4 innings</option></select><small class="muted">Multi-day matches can have up to 4 innings.</small></label>
-              <label>Venue<input id="setup-venue" name="venue" type="text" maxlength="80" placeholder="Match venue"></label>
-              <label>Toss winner<select id="toss-winner" name="tossWinner"></select></label>
-              <label>Toss decision<select id="toss-decision" name="tossDecision"><option value="bat">Bat first</option><option value="bowl">Bowl first</option></select></label>
-            </div>
-            <div class="action-row setup-actions"><button class="btn btn-primary" type="submit">Create Match</button><button id="create-team-button" class="btn btn-secondary" type="button">＋ Custom Team</button></div>
-          </form>
-          </div>
-          <div class="glass card" id="match-team-builder"><h3>Custom Teams</h3><div id="custom-team-list"></div></div>
-        </section>
+          <div class="glass card" id="match-setup"></div>
+          <div class="glass card mt" id="match-team-builder"></div>
+        </div>
 
-        <section id="scoreboard-section" class="page-section classic-section hidden">
+        <!-- Live scoreboard -->
+        <div id="scoreboard-section" class="section hidden">
           <h2 class="panel-title">Live Scoreboard</h2>
-          <div id="live-match" class="glass card">
-            <div id="innings-tabs" class="innings-tabs"></div>
-            <div id="scoreboard" class="scoreboard classic-scoreboard"></div>
-            <div id="target-banner" class="target-banner hidden"></div>
-            <div class="scorecard-grid">
-              <section class="glass inset-card"><h3>Batting card</h3><div id="player-rows" class="player-rows"></div></section>
-              <section class="glass inset-card"><h3>Bowling card</h3><div id="bowler-rows" class="player-rows"></div></section>
-            </div>
-            <section id="scoring-controls" class="scoring-panel">
-              <div class="form-grid player-pickers">
-                <label>Striker<select id="striker-select"></select></label>
-                <label>Non-striker<select id="non-striker-select"></select></label>
-                <label>Bowler<select id="bowler-select"></select></label>
-              </div>
-              <h3 class="control-label">This over</h3>
-              <div id="over-dots" class="over-dots" aria-label="Current over deliveries"></div>
-              <h3 class="control-label">Run pad</h3>
-              <div class="runpad">
-                <button class="run-btn" data-runs="0" type="button">0</button><button class="run-btn" data-runs="1" type="button">1</button>
-                <button class="run-btn" data-runs="2" type="button">2</button><button class="run-btn" data-runs="3" type="button">3</button>
-                <button class="run-btn boundary" data-runs="4" type="button">4</button><button class="run-btn boundary" data-runs="5" type="button">5</button>
-                <button class="run-btn boundary" data-runs="6" type="button">6</button><button class="run-btn wicket-btn" data-wicket="true" type="button">W</button>
-                <button id="undo-ball" class="run-btn undo-btn" type="button">Undo</button>
-              </div>
-              <div class="classic-actions">
-                <button id="live-end-innings" class="btn btn-secondary" type="button">Declare / End Innings</button>
-                <button id="start-second-innings" class="btn btn-secondary" type="button" disabled>Start next innings</button>
-                <button id="swap-strike" class="btn btn-secondary" type="button">Swap strike</button>
-              </div>
-              <div id="multi-innings" class="target-banner hidden"><strong id="target-display">Target awaits</strong><p id="multi-innings-summary"></p></div>
-              <p id="innings-status" class="status-inline"></p>
-            </section>
-          </div>
-          <section id="post-match" class="glass card hidden">
-            <h2>Post-match player stats</h2>
-            <form id="post-match-form" class="form-grid" novalidate>
-              <label>Batter<select id="post-player" required></select></label><label>Runs<input id="post-runs" type="number" min="0" value="0" required></label>
-              <label>Balls<input id="post-balls" type="number" min="0" value="0" required></label><label>Fours<input id="post-fours" type="number" min="0" value="0" required></label>
-              <label>Sixes<input id="post-sixes" type="number" min="0" value="0" required></label><label>Bowler<select id="post-bowler-player" required></select></label>
-              <label>Wickets<input id="post-wickets" type="number" min="0" value="0" required></label><label>Bowling overs<input id="post-bowling-overs" type="number" min="0" step="0.1" value="0" required></label><label>Runs conceded<input id="post-conceded" type="number" min="0" value="0" required></label>
-              <button class="btn btn-primary field-span" type="submit">Save player stats</button>
-            </form>
-            <button id="finalize-match" class="btn btn-secondary mt" type="button">Finish match</button>
-          </section>
-        </section>
+          <div class="glass card" id="live-match"></div>
+        </div>
 
-        <section id="analysis-section" class="page-section classic-section hidden">
+        <!-- Analysis (history + charts + awards + print) -->
+        <div id="analysis-section" class="section hidden">
           <h2 class="panel-title">Analysis &amp; Awards</h2>
-          <div class="field-inline glass card"><label>Show<select id="chart-select"><option value="series">Series Total</option><option value="week">This Week</option><option value="last">Last Match</option><optgroup id="individual-match-options" label="Individual"></optgroup></select></label><button id="print-report" class="btn btn-secondary" type="button">Print report</button></div>
-          <div class="grid grid-2">
-            <div class="glass card"><h3 class="card-title">Team Performance</h3><div class="chart-wrap"><canvas id="team-chart"></canvas></div></div>
-            <div class="glass card"><h3 class="card-title">Player Run Distribution</h3><div class="chart-wrap"><canvas id="player-chart"></canvas></div></div>
+          <div class="field-inline">
+            <label class="field">
+              <span>Show</span>
+              <select id="chart-select"></select>
+            </label>
           </div>
-          <div class="glass card"><h3 class="card-title">Season Awards</h3><div id="awards-grid" class="awards-grid"></div></div>
-          <div class="glass card"><h3 class="card-title">Match History</h3><div id="analysis-matches" class="match-list"></div></div>
-        </section>
+          <div class="grid grid-2">
+            <div class="glass card">
+              <h3 class="card-title">Team Performance</h3>
+              <div class="chart-wrap"><canvas id="pie-team"></canvas></div>
+            </div>
+            <div class="glass card">
+              <h3 class="card-title">Player Run Distribution</h3>
+              <div class="chart-wrap"><canvas id="pie-players"></canvas></div>
+              <p id="player-chart-note" class="hint"></p>
+            </div>
+          </div>
+          <div class="glass card" id="awards"></div>
+          <div class="glass card">
+            <h3 class="card-title">🖨 Printable Summary</h3>
+            <p class="hint" style="margin-top:0">Generate a clean, print-ready report of every match, multi-innings scorecard, and award.</p>
+            <button id="print-btn" class="btn btn-primary btn-block mt" type="button">🖨 Print Match Summary</button>
+          </div>
+          <div class="glass card">
+            <h3 class="card-title">Match History</h3>
+            <div id="history-list"></div>
+          </div>
+        </div>
 
-        <section id="settings-section" class="page-section classic-section hidden">
+        <!-- Settings, Captain Election, Custom Teams & Themes -->
+        <div id="settings-section" class="section hidden">
           <h2 class="panel-title">Settings &amp; Team Management</h2>
           <div class="grid grid-2">
-            <section class="glass card" id="team-profile">
-              <h3>Player Profile</h3>
-              <form id="profile-form" class="form-stack" novalidate>
-                <label>Name<input id="profile-name" type="text" maxlength="40" required></label>
-                <label>Role<select id="profile-role"><option>Batter</option><option>Bowler</option><option>All-rounder</option><option>Wicket-keeper</option></select></label>
-                <label>Team<select id="profile-team"></select></label>
-                <label>Tags<input id="profile-tags" type="text" maxlength="120"></label>
-                <button class="btn btn-primary" type="submit">Save profile</button>
-              </form>
-            </section>
-            <section class="glass card" id="team-captain"><h3>Captain Election</h3><form id="captain-vote-form" class="form-stack" novalidate><label>Team<select id="vote-team" required></select></label><label>Candidate<select id="vote-candidate" required></select></label><button class="btn btn-primary" type="submit">Cast captain vote</button></form><p id="captain-result" class="status-inline"></p></section>
+            <div class="glass card" id="team-profile"></div>
+            <div class="glass card" id="team-captain"></div>
           </div>
           <div class="grid grid-2 mt">
-            <section class="glass card" id="team-vote"><h3>Secret-Code Vote</h3><form id="code-vote-form" class="form-stack" novalidate><label>Secret code<input id="secret-code" type="password" autocomplete="off" required></label><button class="btn btn-secondary" type="submit">Submit code vote</button></form><p id="code-result" class="status-inline"></p></section>
-            <section class="glass card" id="theme-customizer"><h3>Theme</h3><div class="theme-grid">
-              <button class="theme-card" type="button" data-theme="theme-default-glass-dark"><span class="theme-swatch default-swatch"></span>Glass Dark</button>
-              <button class="theme-card" type="button" data-theme="theme-neon-cyberpunk"><span class="theme-swatch neon-swatch"></span>Neon Cyberpunk</button>
-              <button class="theme-card" type="button" data-theme="theme-emerald-pitch"><span class="theme-swatch emerald-swatch"></span>Emerald Pitch</button>
-              <button class="theme-card" type="button" data-theme="theme-midnight-apex"><span class="theme-swatch midnight-swatch"></span>Midnight Apex</button>
-              <select id="theme-select" class="visually-hidden" aria-hidden="true" tabindex="-1"><option value="theme-default-glass-dark">Glass Dark</option><option value="theme-neon-cyberpunk">Neon Cyberpunk</option><option value="theme-emerald-pitch">Emerald Pitch</option><option value="theme-midnight-apex">Midnight Apex</option></select>
-            </div><button id="settings-create-team" class="btn btn-secondary mt" type="button">＋ Create custom team</button><div id="settings-team-list" class="team-list"></div></section>
+            <div class="glass card" id="team-vote"></div>
+            <div class="glass card" id="team-manager"></div>
           </div>
-        </section>
-      </main>
-    </div>
+          <div class="glass card mt" id="theme-customizer"></div>
+        </div>
+
+    </main>
   </div>
-  <section id="report-root" class="hidden" aria-hidden="true"></section>
-  <div id="glass-modal" class="glass-modal" aria-hidden="true" role="presentation"></div>
-  <script type="module" src="app.js"></script>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- Printable report (hidden on screen, shown only when printing) -->
+  <div id="print-area" aria-hidden="true"></div>
+
+  <!-- CDN libraries (order matters) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
