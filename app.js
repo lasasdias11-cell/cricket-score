@@ -66,6 +66,33 @@ function applyTheme(themeId) {
   try { localStorage.setItem(LS.theme, chosen); } catch (e) {}
 }
 
+function toggleTheme() {
+  const current = getSavedTheme();
+  const currentIndex = THEMES.findIndex(theme => theme.id === current);
+  const next = THEMES[(currentIndex + 1) % THEMES.length];
+  applyTheme(next.id);
+  renderTeam();
+  const button = document.getElementById('theme-toggle');
+  if (button) {
+    button.title = 'Theme: ' + next.name;
+    button.setAttribute('aria-label', 'Theme: ' + next.name);
+    const icon = button.querySelector('i');
+    if (icon) icon.className = next.id === 'default' ? 'fa-solid fa-moon' : 'fa-solid fa-sun';
+  }
+}
+
+function updateClock() {
+  const now = new Date();
+  const timeEl = document.getElementById('live-clock');
+  const dateEl = document.getElementById('live-date');
+  if (timeEl) timeEl.textContent = now.toLocaleTimeString('en-GB', { hour12: false }) + ' LK';
+  if (dateEl) {
+    dateEl.textContent = now.getFullYear() + '/' +
+      String(now.getMonth() + 1).padStart(2, '0') + '/' +
+      String(now.getDate()).padStart(2, '0');
+  }
+}
+
 // Apply saved theme immediately on evaluation
 applyTheme(getSavedTheme());
 
@@ -896,8 +923,8 @@ function showSection(sectionId) {
 
 function renderHeader() {
   const u = state.user;
-  const whoami = document.getElementById('whoami');
-  if (whoami) whoami.textContent = u ? u.displayName + ' · ' + getTeam(u.teamId).name : '';
+  const profileButton = document.getElementById('logout-btn');
+  if (profileButton) profileButton.title = u ? 'Sign out ' + u.displayName : 'Logout';
 }
 
 function renderSyncStatus() {
@@ -905,15 +932,13 @@ function renderSyncStatus() {
   const error = online && state.syncError;
   const main = document.getElementById('sync-status');
   if (main) {
-    if (error) {
-      main.textContent = '● Error — check rules';
-      main.className = 'sync-status error';
-      main.title = 'Firestore is rejecting requests — deploy firestore.rules with anonymous auth enabled.';
-    } else {
-      main.textContent = online ? '● Live' : '● Local';
-      main.className = 'sync-status ' + (online ? 'online' : 'local');
-      main.title = online ? 'Connected to Firestore — live cross-device sync active' : 'Running in local fallback mode';
-    }
+    const status = error ? 'error' : online ? 'online' : 'local';
+    const label = error ? 'Sync Error' : online ? 'Cloud Live' : 'Local Mode';
+    main.className = 'status-pill sync-status ' + status;
+    main.title = error
+      ? 'Firestore is rejecting requests — check the deployed rules.'
+      : online ? 'Connected to Firestore — live cross-device sync active' : 'Running in local fallback mode';
+    main.innerHTML = '<span class="dot' + (error || !online ? '' : ' pulse') + '"></span> ' + label;
   }
   const login = document.getElementById('login-sync');
   if (login) {
@@ -2969,6 +2994,9 @@ function globalChange(e) {
 
 /* ---------- 23. Application Lifecycle Bootstrapper ---------- */
 async function init() {
+  updateClock();
+  setInterval(updateClock, 1000);
+
   setTimeout(() => {
     const splash = document.getElementById('splash-screen');
     if (!splash) return;
