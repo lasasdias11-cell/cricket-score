@@ -5,7 +5,7 @@ import {
   createUserWithEmailAndPassword,
   updateProfile,
   onAuthStateChanged,
-  signOut
+  signOut as firebaseSignOut
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import {
   getFirestore,
@@ -1073,7 +1073,7 @@ const services = {
     createUserWithEmailAndPassword,
     updateProfile,
     onAuthStateChanged,
-    signOut,
+    signOut: firebaseSignOut,
     getFirestore,
     collection,
     doc,
@@ -1152,7 +1152,7 @@ async function updateFirebaseProfile(user, profile) {
 }
 
 async function signOutFirebase() {
-  if (auth.currentUser) await signOut(auth);
+  if (auth.currentUser) await firebaseSignOut(auth);
 }
 
 function loadFirebaseModules() {
@@ -2364,6 +2364,44 @@ async function handlePlayerLogin(username) {
   }
 }
 
+async function handleLoginClick() {
+  console.log("Sign In Button Clicked!");
+
+  const selectEl = document.getElementById("username-select");
+  if (!selectEl) {
+    console.error("Player dropdown not found.");
+    return;
+  }
+
+  const username = selectEl.value;
+  console.log("Selected player:", username);
+  if (!username) {
+    await openGlassModal({
+      title: "Error",
+      body: "<p>Please select a player first.</p>",
+      actions: [{ id: "ok", label: "Got it", primary: true }]
+    });
+    return;
+  }
+
+  const teamKey = selectEl.selectedOptions[0]?.dataset.team;
+  if (!teamKey) {
+    await showError(new TypeError("The selected player is not associated with a team."), "Login failed");
+    return;
+  }
+
+  try {
+    console.log("Resolved email:", resolveEmail(username, teamKey));
+    await handlePlayerLogin(username);
+    console.log("Login successful:", store.getState().currentUser);
+  } catch (error) {
+    console.error("Login failed:", error);
+    await showError(error, "Login failed");
+  }
+}
+
+window.handleLoginClick = handleLoginClick;
+
 async function advancedLogin(event) {
   event?.preventDefault?.();
   const email = el("adv-email").value.trim().toLowerCase();
@@ -2414,8 +2452,7 @@ async function signOut() {
   updateState((state) => ({ ...state, currentUser: null, currentPage: "dashboard" }));
   localStorage.removeItem(LOCAL_SESSION_KEY);
   closeAuthSections();
-  const form = el("login-form");
-  if (form) form.reset();
+  el("username-select").value = "";
   updateSelectedPlayer();
   stopCloudListeners();
 
@@ -2712,42 +2749,6 @@ function printReport() {
 }
 
 function wireEvents() {
-  const loginForm = el("login-form");
-  if (loginForm) {
-    loginForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const username = el("username-select")?.value;
-      console.log("Sign-in form submitted:", { username });
-      if (!username) {
-        setInlineStatus(el("login-status"), "Please select your player name.", "error");
-        return;
-      }
-      try {
-        await handlePlayerLogin(username);
-      } catch (error) {
-        await showError(error, "Sign-in failed");
-      }
-    });
-  }
-  const loginSubmit = el("login-submit");
-  if (loginSubmit) {
-    loginSubmit.addEventListener("click", async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const username = el("username-select")?.value;
-      console.log("Sign-in button clicked:", { username });
-      if (!username) {
-        setInlineStatus(el("login-status"), "Please select your player name.", "error");
-        return;
-      }
-      try {
-        await handlePlayerLogin(username);
-      } catch (error) {
-        await showError(error, "Sign-in failed");
-      }
-    });
-  }
   el("username-select").addEventListener("change", runSafely(() => updateSelectedPlayer()));
   document.querySelectorAll(".toggle-link").forEach((button) => {
     button.addEventListener("click", () => toggleAuthSection(button.dataset.target, button));

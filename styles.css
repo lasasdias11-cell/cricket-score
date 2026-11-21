@@ -83,7 +83,7 @@ body {
   place-items: center;
   overflow: hidden;
   transition: opacity 0.8s ease;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .splash-logo {
@@ -293,7 +293,7 @@ h2 {
   padding: clamp(1.3rem, 5vw, 2.4rem);
 }
 
-.auth-card #login-submit {
+.auth-card #sign-in-btn {
   width: 100%;
   margin-top: 0.4rem;
 }
