@@ -4,8 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#05070d" />
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="description" content="Thursday Cricket — Multi-Innings, Live Scoring, Ball-by-Ball Analysis & Dynamic Squads." />
   <title>Thursday Cricket · Live Scoring & Multi-Innings</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="assets/logo.png">
+  <link rel="apple-touch-icon" href="assets/logo.png">
   <link rel="preconnect" href="https://www.gstatic.com" crossorigin />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -13,6 +18,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="effects.css" />
 </head>
 <body>
   <div id="splash-screen" role="status" aria-label="Loading Thursday Cricket">
@@ -43,7 +49,10 @@
             <span>Username</span>
             <select id="username-select" required></select>
           </label>
-          <button type="button" class="btn btn-primary btn-block" onclick="handleLoginClick()">Sign In</button>
+          <button type="submit" id="sign-in-btn" class="btn btn-primary btn-block" onclick="handleLoginClick()">
+            <span id="btn-text">Sign In →</span>
+            <span id="btn-loader" style="display: none;"><i class="fa-solid fa-spinner fa-spin"></i> Signing in...</span>
+          </button>
         </form>
         <details class="advanced-register mt">
           <summary>Advanced / Register</summary>
@@ -82,19 +91,19 @@
 
       <nav class="nav-links" id="main-nav" aria-label="Main navigation">
         <button type="button" class="nav-btn is-active" data-section="dashboard-section" title="Dashboard">
-          <i class="fa-solid fa-house" aria-hidden="true"></i><span>Dashboard</span>
+          <i class="fa-solid fa-house"></i>
         </button>
         <button type="button" class="nav-btn" data-section="match-setup-section" title="Match Setup">
-          <i class="fa-solid fa-plus" aria-hidden="true"></i><span>Match Setup</span>
+          <i class="fa-solid fa-plus"></i>
         </button>
         <button type="button" class="nav-btn" data-section="scoreboard-section" title="Live Score">
-          <i class="fa-solid fa-baseball-bat-ball" aria-hidden="true"></i><span>Live Score</span>
+          <i class="fa-solid fa-baseball-bat-ball"></i>
         </button>
         <button type="button" class="nav-btn" data-section="analysis-section" title="Analysis">
-          <i class="fa-solid fa-chart-pie" aria-hidden="true"></i><span>Analysis</span>
+          <i class="fa-solid fa-chart-pie"></i>
         </button>
         <button type="button" class="nav-btn" data-section="settings-section" title="Settings">
-          <i class="fa-solid fa-gear" aria-hidden="true"></i><span>Settings</span>
+          <i class="fa-solid fa-gear"></i>
         </button>
       </nav>
       <div class="right-actions">
@@ -200,6 +209,22 @@
 
   <!-- Printable report (hidden on screen, shown only when printing) -->
   <div id="print-area" aria-hidden="true"></div>
+
+  <footer class="app-footer glass">
+    <div class="footer-content">
+      <div class="footer-brand">
+        <img src="assets/logo.png" alt="Logo" style="height: 24px;">
+        <span>Thursday Cricket</span>
+      </div>
+      <p class="footer-text">Built for the squad. Play hard, score harder.</p>
+      <div class="footer-links">
+        <a href="#" onclick="showSection('dashboard-section')">Dashboard</a>
+        <a href="#" onclick="showSection('analysis-section')">Stats</a>
+        <a href="https://github.com/lasasdias11-cell/cricket-score" target="_blank">GitHub</a>
+      </div>
+      <p class="footer-copy">&copy; 2026 Thursday Cricket. All rights reserved.</p>
+    </div>
+  </footer>
 
   <!-- CDN libraries (order matters) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>

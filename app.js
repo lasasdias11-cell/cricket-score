@@ -7,6 +7,13 @@
 
 'use strict';
 
+/* ---------- Service Worker PWA Registration ---------- */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW registration failed:', err));
+  });
+}
+
 /* ---------- 1. Firebase Configuration ----------
    Project: thursday-cricket · App: 1:752945537542:web:84be60617247fc045fd987 */
 const FIREBASE_CONFIG = {
@@ -161,7 +168,10 @@ function defaultTeams() {
   return Object.fromEntries(Object.values(DEFAULT_TEAMS).map(t => [t.id, Object.assign({}, t, { members: t.members.slice() })]));
 }
 function getTeam(id) {
-  return state.teams[id] || defaultTeams()[id] || { id, name: id, short: id.slice(0, 3).toUpperCase(), secretCode: '', members: [], color: '#3b82f6' };
+  if (id === 'individual_pool') return { id: 'individual_pool', name: 'Individual Players', short: 'IND', color: '#a855f7', members: [] };
+  if (id === 'none' || !id) return { id: 'none', name: 'No Team', short: 'N/A', color: '#64748b', members: [] };
+  const strId = String(id);
+  return state.teams[strId] || defaultTeams()[strId] || { id: strId, name: strId, short: strId.slice(0, 3).toUpperCase(), secretCode: '', members: [], color: '#3b82f6' };
 }
 function memberKey(teamId, member) { return teamId + '__' + member; }
 function loginEmailFor(teamId, member) {
@@ -343,10 +353,11 @@ const db = (() => {
     return mode;
   }
 
+  const unsubs = [];
   function subscribe(col, cb) {
     subs[col].push(cb);
     if (mode === 'firestore') {
-      fs.collection(cols[col]).onSnapshot(async snap => {
+      const unsub = fs.collection(cols[col]).onSnapshot(async snap => {
         if (onErrorCb) onErrorCb(false);
         state.syncError = false;
         renderSyncStatus();
@@ -383,8 +394,16 @@ const db = (() => {
         renderSyncStatus();
         emitLocal(col);
       });
+      if (typeof unsub === 'function') unsubs.push(unsub);
     } else {
       emitLocal(col);
+    }
+  }
+
+  function unsubscribeAll() {
+    while (unsubs.length) {
+      const u = unsubs.pop();
+      try { if (typeof u === 'function') u(); } catch (e) {}
     }
   }
 
@@ -520,7 +539,7 @@ const db = (() => {
   }
 
   return {
-    init, onError, subscribe, saveTeam, saveCustomTeam, deleteCustomTeam,
+    init, onError, subscribe, unsubscribeAll, saveTeam, saveCustomTeam, deleteCustomTeam,
     saveMatch, deleteMatch, saveVote, savePlayer, get mode() { return mode; }
   };
 })();
@@ -639,7 +658,9 @@ async function initSecondInnings(matchId) {
   if (m.innings.length >= 2) {
     m.currentInningIdx = 1;
     m.updatedAt = Date.now();
-    await db.saveMatch(m);
+    try {
+      await db.saveMatch(m);
+    } catch (e) { console.error('Save match error:', e); }
     renderLiveArea();
     openGlassModal('Switched to 2nd Innings.', 'success');
     return;
@@ -677,7 +698,9 @@ async function initSecondInnings(matchId) {
   m.updatedAt = Date.now();
   syncMatchTotals(m);
 
-  await db.saveMatch(m);
+  try {
+    await db.saveMatch(m);
+  } catch (e) { console.error('Save match error:', e); }
   renderLiveArea();
   openGlassModal('🎯 2nd Innings initialized! Target: ' + target + ' runs.', 'success');
 }
@@ -689,7 +712,9 @@ async function setMatchInning(matchId, idx) {
   if (idx >= 0 && idx < m.innings.length) {
     m.currentInningIdx = idx;
     m.updatedAt = Date.now();
-    await db.saveMatch(m);
+    try {
+      await db.saveMatch(m);
+    } catch (e) { console.error('Save match error:', e); }
     renderLiveArea();
   }
 }
@@ -805,14 +830,27 @@ function populateRegisterTeamSelect() {
   if (prev) sel.value = prev;
 }
 
-async function handleLoginClick() {
+function setLoginLoading(loading) {
+  const btn = document.getElementById('sign-in-btn');
+  const btnText = document.getElementById('btn-text');
+  const btnLoader = document.getElementById('btn-loader');
+  if (btn) btn.disabled = loading;
+  if (btnText) btnText.style.display = loading ? 'none' : 'inline';
+  if (btnLoader) btnLoader.style.display = loading ? 'inline-block' : 'none';
+}
+
+async function handleLoginClick(e) {
+  if (e && e.preventDefault) e.preventDefault();
   const sel = document.getElementById('username-select');
+  const btn = document.getElementById('sign-in-btn');
+  if (btn && btn.disabled) return; // already signing in
   const selected = sel && sel.options[sel.selectedIndex];
   if (!selected || !selected.dataset.teamId || !selected.dataset.member) {
     openGlassModal('Please select your username.', 'error');
     return;
   }
 
+  setLoginLoading(true);
   const team = getTeam(selected.dataset.teamId);
   const member = selected.dataset.member;
   const email = loginEmailFor(team.id, member);
@@ -826,6 +864,7 @@ async function handleLoginClick() {
     await auth.signInWithEmailAndPassword(email, password);
     state.user = { teamId: team.id, member, displayName: displayNameOf(team.id, member) };
     persistUser();
+    startSubscriptions();
     showSection('dashboard-section');
     renderHeader();
     renderDashboard();
@@ -837,10 +876,15 @@ async function handleLoginClick() {
   } catch (error) {
     console.error('[Thursday Cricket] Sign-in failed:', error);
     openGlassModal('Sign-in failed. Check your username and account credentials, then try again.', 'error');
+  } finally {
+    setLoginLoading(false);
   }
 }
 
 function logout() {
+  if (db && typeof db.unsubscribeAll === 'function') {
+    db.unsubscribeAll();
+  }
   state.user = null;
   state.activeMatchId = null;
   try { localStorage.removeItem(LS.user); } catch (e) {}
@@ -885,13 +929,17 @@ async function registerNewPlayer(e) {
 
   // Save profile to /players
   state.players[pKey] = profile;
-  await db.savePlayer(pKey, profile);
+  try {
+    await db.savePlayer(pKey, profile);
 
-  // Add player to team roster if not already present
-  if (!team.members) team.members = [];
-  if (!team.members.includes(rawName)) {
-    team.members.push(rawName);
-    await db.saveTeam(teamId, team);
+    // Add player to team roster if not already present
+    if (!team.members) team.members = [];
+    if (!team.members.includes(rawName)) {
+      team.members.push(rawName);
+      await db.saveTeam(teamId, team);
+    }
+  } catch (err) {
+    console.error('Registration save error:', err);
   }
 
   rebuildTeams();
@@ -952,6 +1000,10 @@ function renderSyncStatus() {
 /* ---------- 11. Match Results & Summary Helpers ---------- */
 function summaryLine(m) {
   ensureMatchInnings(m);
+  if (m.isIndividual) {
+    const inn = m.innings[0];
+    return inn ? ('IND ' + (inn.runs || 0) + '/' + (inn.wickets || 0) + (inn.balls ? ' (' + fmtOvers(inn.balls) + ' ov)' : '')) : 'IND 0/0';
+  }
   return m.innings.map(inn => {
     const meta = getTeam(inn.battingTeam);
     return meta.short + ' ' + (inn.runs || 0) + '/' + (inn.wickets || 0) + (inn.balls ? ' (' + fmtOvers(inn.balls) + ' ov)' : '');
@@ -966,6 +1018,13 @@ function resultOf(m) {
   const r1 = inn1.runs || 0;
   const team1 = getTeam(inn1.battingTeam);
   const inn2 = m.innings[1];
+
+  if (m.isIndividual) {
+    if (m.status === 'completed') {
+      return { draw: false, completed: true, winnerName: '', text: 'Individual Match Completed — Total: ' + r1 + '/' + (inn1.wickets || 0) };
+    }
+    return { draw: false, completed: false, inProgress: true, text: 'Individual Match in progress' };
+  }
 
   if (!inn2) {
     if (m.status === 'completed') {
@@ -1043,10 +1102,12 @@ function matchSummaryHTML(m) {
         '</div>' +
       '</div>' +
       '<div class="match-summary">' +
-        m.innings.map(inn => {
-          const meta = getTeam(inn.battingTeam);
-          return '<div class="side"><div class="s-name">' + esc(meta.name) + ' (Inn ' + inn.inningNum + ')</div><div class="s-score">' + (inn.runs || 0) + '/' + (inn.wickets || 0) + '</div></div>';
-        }).join('<div class="vs">vs</div>') +
+        (m.isIndividual
+          ? '<div class="side"><div class="s-name">Individual Players</div><div class="s-score">' + (m.innings[0] ? (m.innings[0].runs || 0) + '/' + (m.innings[0].wickets || 0) : '0/0') + '</div></div>'
+          : m.innings.map(inn => {
+              const meta = getTeam(inn.battingTeam);
+              return '<div class="side"><div class="s-name">' + esc(meta.name) + ' (Inn ' + inn.inningNum + ')</div><div class="s-score">' + (inn.runs || 0) + '/' + (inn.wickets || 0) + '</div></div>';
+            }).join('<div class="vs">vs</div>')) +
       '</div>' +
       (res && res.text ? '<div class="muted mt" style="font-size:.82rem;font-weight:700">📢 ' + esc(res.text) + '</div>' : '') +
     '</div>';
@@ -1111,6 +1172,7 @@ function renderSetupForm() {
   if (!setupEl) return;
 
   const isCustomMatch = state.matchSetupType === 'custom';
+  const isIndividual = state.matchSetupType === 'individual';
   const allTeams = Object.values(state.teams);
 
   let teamSelectorHtml = '';
@@ -1140,13 +1202,31 @@ function renderSetupForm() {
           '<option value="20">20 Overs</option>' +
         '</select>' +
       '</label>';
+  } else if (isIndividual) {
+    teamSelectorHtml =
+      '<div class="alert alert-info mt" style="background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.3);padding:14px;border-radius:12px;color:#e9d5ff;font-size:0.88rem;line-height:1.45">' +
+        '👤 <em>Individual Mode: Add players directly on the scoreboard to track everyone\'s individual runs and wickets.</em>' +
+      '</div>' +
+      '<label class="field mt"><span>Overs Per Match</span>' +
+        '<select id="match-overs">' +
+          '<option value="0">Unlimited / Open Match</option>' +
+          '<option value="5">5 Overs</option>' +
+          '<option value="6">6 Overs</option>' +
+          '<option value="8">8 Overs</option>' +
+          '<option value="10" selected>10 Overs</option>' +
+          '<option value="12">12 Overs</option>' +
+          '<option value="15">15 Overs</option>' +
+          '<option value="20">20 Overs</option>' +
+        '</select>' +
+      '</label>';
   }
 
   setupEl.innerHTML =
     '<h3 class="card-title">Match Setup &amp; Matchmaker</h3>' +
     '<div class="setup-type-toggle">' +
-      '<button type="button" class="setup-type-btn' + (!isCustomMatch ? ' is-active' : '') + '" data-action="set-setup-type" data-type="standard">🏏 Standard Squad Match</button>' +
-      '<button type="button" class="setup-type-btn' + (isCustomMatch ? ' is-active' : '') + '" data-action="set-setup-type" data-type="custom">⚔️ Custom Matchmaker</button>' +
+      '<button type="button" class="setup-type-btn' + (state.matchSetupType === 'standard' ? ' is-active' : '') + '" data-action="set-setup-type" data-type="standard">🏏 Standard Squad</button>' +
+      '<button type="button" class="setup-type-btn' + (state.matchSetupType === 'custom' ? ' is-active' : '') + '" data-action="set-setup-type" data-type="custom">⚔️ Custom Match</button>' +
+      '<button type="button" class="setup-type-btn' + (state.matchSetupType === 'individual' ? ' is-active' : '') + '" data-action="set-setup-type" data-type="individual">👤 Individual Match</button>' +
     '</div>' +
     '<form data-form="start">' +
       '<label class="field"><span>Match Title</span><input id="match-name" type="text" placeholder="e.g. Thursday Night Derby" maxlength="60" required /></label>' +
@@ -1250,17 +1330,20 @@ async function handleCreateTeam(e) {
     createdAt: Date.now()
   };
 
-  // Register all members in /players
-  for (const m of members) {
-    const pKey = memberKey(teamId, m);
-    if (!state.players[pKey]) {
-      const pProfile = { displayName: m, name: m, teamId, createdAt: Date.now() };
-      state.players[pKey] = pProfile;
-      await db.savePlayer(pKey, pProfile);
+  try {
+    for (const m of members) {
+      const pKey = memberKey(teamId, m);
+      if (!state.players[pKey]) {
+        const pProfile = { displayName: m, name: m, teamId, createdAt: Date.now() };
+        state.players[pKey] = pProfile;
+        await db.savePlayer(pKey, pProfile);
+      }
     }
-  }
 
-  await db.saveCustomTeam(teamId, newTeam);
+    await db.saveCustomTeam(teamId, newTeam);
+  } catch (err) {
+    console.error('Error saving custom team:', err);
+  }
   state.customTeams[teamId] = newTeam;
   rebuildTeams();
 
@@ -1279,22 +1362,32 @@ function startMatch() {
   const name = (nameEl.value || '').trim();
   if (!name) return openGlassModal('Please enter a match name.', 'error');
 
-  const isCustomMatch = state.matchSetupType === 'custom';
-  let t1Id = 'whiteTigers';
-  let t2Id = 'blackPanthers';
+  const isIndividual = state.matchSetupType === 'individual';
+  let t1Id = 'individual_pool'; // A special ID for individual mode
+  let t2Id = 'none';
   let maxOvers = 0;
 
-  if (isCustomMatch) {
-    const t1El = document.getElementById('match-team1');
-    const t2El = document.getElementById('match-team2');
-    const ovEl = document.getElementById('match-overs');
-    t1Id = t1El ? t1El.value : 'whiteTigers';
-    t2Id = t2El ? t2El.value : 'blackPanthers';
-    maxOvers = ovEl ? parseInt(ovEl.value, 10) || 0 : 0;
+  if (!isIndividual) {
+    if (state.matchSetupType === 'custom') {
+      const t1El = document.getElementById('match-team1');
+      const t2El = document.getElementById('match-team2');
+      const ovEl = document.getElementById('match-overs');
+      t1Id = t1El ? t1El.value : 'whiteTigers';
+      t2Id = t2El ? t2El.value : 'blackPanthers';
+      maxOvers = ovEl ? parseInt(ovEl.value, 10) || 0 : 0;
 
-    if (t1Id === t2Id) {
-      return openGlassModal('Team 1 and Team 2 must be different teams.', 'error');
+      if (t1Id === t2Id) {
+        return openGlassModal('Team 1 and Team 2 must be different teams.', 'error');
+      }
+    } else {
+      // Standard logic
+      t1Id = 'whiteTigers';
+      t2Id = 'blackPanthers';
     }
+  } else {
+    // Individual Mode specifics
+    const ovEl = document.getElementById('match-overs');
+    maxOvers = ovEl ? parseInt(ovEl.value, 10) || 0 : 0;
   }
 
   const id = 'm_' + uid();
@@ -1330,6 +1423,8 @@ function startMatch() {
     id,
     name,
     mode: uiMode,
+    matchType: state.matchSetupType, // Save the type!
+    isIndividual: isIndividual,
     status: 'live',
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -1347,7 +1442,9 @@ function startMatch() {
     if (nameEl) nameEl.value = '';
     showSection('scoreboard-section');
     renderMatchPanel();
-    openGlassModal('Match "' + name + '" started — 1st Innings! 🏏', 'success');
+    openGlassModal(isIndividual ? ('Individual match "' + name + '" started! 👤🏏') : ('Match "' + name + '" started — 1st Innings! 🏏'), 'success');
+  }).catch(err => {
+    console.error('Error starting match:', err);
   });
 }
 
@@ -1359,7 +1456,7 @@ async function endMatch(id) {
   ensureMatchInnings(m);
   m.innings.forEach(inn => { inn.completed = true; });
   syncMatchTotals(m);
-  await db.saveMatch(m);
+  try { await db.saveMatch(m); } catch (e) { console.error('Error ending match:', e); }
   renderMatchPanel();
   renderHistory();
   renderAnalysis();
@@ -1370,7 +1467,7 @@ async function reopenMatch(id) {
   const m = state.matches.find(x => x.id === id); if (!m) return;
   m.status = 'live';
   m.updatedAt = Date.now();
-  await db.saveMatch(m);
+  try { await db.saveMatch(m); } catch (e) { console.error('Error reopening match:', e); }
   state.activeMatchId = id;
   showSection('scoreboard-section');
   renderMatchPanel();
@@ -1423,7 +1520,7 @@ function liveHTML(m) {
   const bowlTeam = getTeam(activeInning.bowlingTeam);
 
   // Innings Switcher Tabs
-  const inningsTabsHtml =
+  const inningsTabsHtml = m.isIndividual ? '' : (
     '<div class="innings-tabs">' +
       m.innings.map((inn, i) => {
         const innTeam = getTeam(inn.battingTeam);
@@ -1438,11 +1535,11 @@ function liveHTML(m) {
       (m.innings.length === 1 && m.status === 'live'
         ? '<button type="button" class="btn btn-sm btn-ghost" data-action="init-second-innings" data-id="' + m.id + '">＋ Start 2nd Innings</button>'
         : '') +
-    '</div>';
+    '</div>');
 
   // Target & Required Run Rate Calculation
   let targetBannerHtml = '';
-  if (isInning2 && activeInning.target) {
+  if (!m.isIndividual && isInning2 && activeInning.target) {
     const target = activeInning.target;
     const runsNeeded = Math.max(0, target - (activeInning.runs || 0));
     const ballsBowled = activeInning.balls || 0;
@@ -1484,7 +1581,7 @@ function liveHTML(m) {
 
   // Next Innings CTA Banner (when 1st innings is active)
   let nextInningsBannerHtml = '';
-  if (currentIdx === 0 && m.innings.length === 1 && m.status === 'live') {
+  if (!m.isIndividual && currentIdx === 0 && m.innings.length === 1 && m.status === 'live') {
     nextInningsBannerHtml =
       '<div class="init-innings-box">' +
         '<h4>🏁 1st Innings Concluded?</h4>' +
@@ -1502,15 +1599,19 @@ function liveHTML(m) {
   const canEdit = m.status === 'live';
   const cardHtml = inningCardHTML(m, activeInning, currentIdx, canEdit);
 
+  const activeInningText = m.isIndividual
+    ? '<strong>Individual Players</strong>'
+    : '<strong>Active Inning:</strong> Innings ' + activeInning.inningNum + ' (' + esc(batTeam.name) + ' Batting)';
+
   return '' +
     '<div class="spread">' +
       '<div><div class="row">' + (m.status === 'live' ? '<span class="pulse"></span>' : '') + '<h3 class="card-title" style="margin:0">' + esc(m.name) + '</h3></div>' +
-      '<div class="muted" style="font-size:.82rem">' + modeLabel(m.mode) + ' · ' + (m.maxOvers ? m.maxOvers + ' overs · ' : '') + 'updated ' + fmtDate(m.updatedAt) + '</div></div>' +
+      '<div class="muted" style="font-size:.82rem">' + modeLabel(m.mode) + ' · ' + (m.isIndividual ? 'Individual Match · ' : '') + (m.maxOvers ? m.maxOvers + ' overs · ' : '') + 'updated ' + fmtDate(m.updatedAt) + '</div></div>' +
       headerAction +
     '</div>' +
     '<div class="innings-bar mt">' +
       '<div class="innings-bar-header">' +
-        '<div><strong>Active Inning:</strong> Innings ' + activeInning.inningNum + ' (' + esc(batTeam.name) + ' Batting)</div>' +
+        '<div>' + activeInningText + '</div>' +
         inningsTabsHtml +
       '</div>' +
       targetBannerHtml +
@@ -1531,7 +1632,7 @@ function inningCardHTML(m, inn, inningIdx, canEdit) {
     body =
       '<div class="scoreline mt"><span class="score-big" id="totals-' + tid + '">' + (inn.runs || 0) + '</span><span class="score-meta">/ ' + (inn.wickets || 0) + ' wickets</span></div>' +
       '<div class="grid grid-2 mt">' +
-        '<label class="field"><span>Team Runs</span><input type="number" min="0" inputmode="numeric" value="' + (inn.runs || 0) + '" data-score data-match="' + m.id + '" data-inning="' + inningIdx + '" data-field="runs"' + (canEdit ? '' : ' disabled') + ' /></label>' +
+        '<label class="field"><span>' + (m.isIndividual ? 'Total Runs' : 'Team Runs') + '</span><input type="number" min="0" inputmode="numeric" value="' + (inn.runs || 0) + '" data-score data-match="' + m.id + '" data-inning="' + inningIdx + '" data-field="runs"' + (canEdit ? '' : ' disabled') + ' /></label>' +
         '<label class="field"><span>Wickets Fallen</span><input type="number" min="0" max="10" inputmode="numeric" value="' + (inn.wickets || 0) + '" data-score data-match="' + m.id + '" data-inning="' + inningIdx + '" data-field="wickets"' + (canEdit ? '' : ' disabled') + ' /></label>' +
         '<label class="field"><span>Overs Bowled</span><input type="number" step="0.1" min="0" inputmode="decimal" value="' + ((inn.balls || 0) / 6) + '" data-score data-match="' + m.id + '" data-inning="' + inningIdx + '" data-field="overs"' + (canEdit ? '' : ' disabled') + ' /></label>' +
       '</div>';
@@ -1590,9 +1691,9 @@ function inningCardHTML(m, inn, inningIdx, canEdit) {
 
     body =
       '<div class="scoreline mt"><span class="score-big" id="totals-' + tid + '">' + (inn.runs || 0) + '</span><span class="score-meta">/ ' + (inn.wickets || 0) + ' wickets</span></div>' +
-      '<div class="scorecard-subhead"><span>🏏 Batting Scorecard (' + esc(meta.name) + ')</span>' + (canEdit ? '<button type="button" class="btn btn-sm btn-ghost" data-action="add-player" data-match="' + m.id + '" data-inning="' + inningIdx + '">＋ Add Batter</button>' : '') + '</div>' +
-      '<div>' + (rows || '<div class="empty" style="padding:12px">No batters yet.</div>') + '</div>' +
-      '<div class="scorecard-subhead mt"><span>🎯 Bowling Figures (' + esc(bowlMeta.name) + ')</span>' + (canEdit ? '<button type="button" class="btn btn-sm btn-ghost" data-action="add-bowler" data-match="' + m.id + '" data-inning="' + inningIdx + '">＋ Add Bowler</button>' : '') + '</div>' +
+      '<div class="scorecard-subhead"><span>🏏 ' + (m.isIndividual ? 'Player Scores' : 'Batting Scorecard (' + esc(meta.name) + ')') + '</span>' + (canEdit ? '<button type="button" class="btn btn-sm btn-ghost" data-action="add-player" data-match="' + m.id + '" data-inning="' + inningIdx + '">＋ Add Player</button>' : '') + '</div>' +
+      '<div>' + (rows || '<div class="empty" style="padding:12px">No players yet.</div>') + '</div>' +
+      '<div class="scorecard-subhead mt"><span>🎯 Bowling Figures' + (m.isIndividual ? '' : ' (' + esc(bowlMeta.name) + ')') + '</span>' + (canEdit ? '<button type="button" class="btn btn-sm btn-ghost" data-action="add-bowler" data-match="' + m.id + '" data-inning="' + inningIdx + '">＋ Add Bowler</button>' : '') + '</div>' +
       '<div>' + (bowlingRows || '<div class="empty" style="padding:12px">No bowlers yet.</div>') + '</div>';
   } else if (mode === 'retro') {
     const rows = (inn.players || []).map((p, i) => {
@@ -1615,7 +1716,7 @@ function inningCardHTML(m, inn, inningIdx, canEdit) {
     body =
       '<div class="scoreline mt"><span class="score-big" id="totals-' + tid + '">' + (inn.runs || 0) + '</span><span class="score-meta">/ ' + (inn.wickets || 0) + ' wickets</span></div>' +
       '<div class="grid grid-2 mt">' +
-        '<label class="field"><span>Team Runs</span><input type="number" min="0" inputmode="numeric" value="' + (inn.runs || 0) + '" data-score data-match="' + m.id + '" data-inning="' + inningIdx + '" data-field="runs"' + (canEdit ? '' : ' disabled') + ' /></label>' +
+        '<label class="field"><span>' + (m.isIndividual ? 'Total Runs' : 'Team Runs') + '</span><input type="number" min="0" inputmode="numeric" value="' + (inn.runs || 0) + '" data-score data-match="' + m.id + '" data-inning="' + inningIdx + '" data-field="runs"' + (canEdit ? '' : ' disabled') + ' /></label>' +
         '<label class="field"><span>Wickets Fallen</span><input type="number" min="0" max="10" inputmode="numeric" value="' + (inn.wickets || 0) + '" data-score data-match="' + m.id + '" data-inning="' + inningIdx + '" data-field="wickets"' + (canEdit ? '' : ' disabled') + ' /></label>' +
         '<label class="field"><span>Overs Bowled</span><input type="number" step="0.1" min="0" inputmode="decimal" value="' + ((inn.balls || 0) / 6) + '" data-score data-match="' + m.id + '" data-inning="' + inningIdx + '" data-field="overs"' + (canEdit ? '' : ' disabled') + ' /></label>' +
       '</div>' +
@@ -1628,9 +1729,13 @@ function inningCardHTML(m, inn, inningIdx, canEdit) {
       const isStriker = i === striker;
       const label = playerLabel(p, tid);
       const clickAttr = canEdit ? ' data-action="set-striker" data-match="' + m.id + '" data-inning="' + inningIdx + '" data-idx="' + i + '"' : '';
+      const nameHtml = p.member
+        ? esc(label)
+        : '<input type="text" value="' + esc(p.name) + '" data-rename data-match="' + m.id + '" data-inning="' + inningIdx + '" data-idx="' + i + '" class="p-name-input" placeholder="Player name" onclick="event.stopPropagation()" />' +
+          (canEdit ? '<button type="button" class="btn btn-sm btn-ghost" data-action="remove-player" data-match="' + m.id + '" data-inning="' + inningIdx + '" data-idx="' + i + '" title="Remove" onclick="event.stopPropagation()" style="margin-left:4px;padding:2px 6px">✕</button>' : '');
       return '' +
         '<div class="prow' + (isStriker ? ' is-striker' : '') + (p.out ? ' is-out' : '') + '"' + clickAttr + '>' +
-          '<div class="p-name">' + esc(label) +
+          '<div class="p-name">' + nameHtml +
             (isStriker ? ' <span class="badge badge-live">batting</span>' : '') +
             (p.out ? ' <span class="badge badge-lost">out</span>' : '') +
           '</div>' +
@@ -1638,7 +1743,7 @@ function inningCardHTML(m, inn, inningIdx, canEdit) {
         '</div>';
     }).join('');
 
-    const strikerName = (inn.players[striker] && playerLabel(inn.players[striker], tid)) || '—';
+    const strikerName = (inn.players && inn.players[striker] && playerLabel(inn.players[striker], tid)) || 'None (Add player)';
     const runpad = canEdit
       ? '<div class="runpad">' +
           [0, 1, 2, 3, 4, 6].map(r => '<button type="button" class="run-btn" data-action="ball" data-match="' + m.id + '" data-inning="' + inningIdx + '" data-runs="' + r + '">' + r + '</button>').join('') +
@@ -1647,7 +1752,8 @@ function inningCardHTML(m, inn, inningIdx, canEdit) {
         '</div>'
       : '';
 
-    const bowling = '<div class="card-title mt">🎯 Bowling (' + esc(bowlMeta.name) + ')</div>' +
+    const bowling = (!m.isIndividual || (inn.bowlers && inn.bowlers.length > 0)) ? (
+      '<div class="card-title mt">🎯 Bowling' + (m.isIndividual ? '' : ' (' + esc(bowlMeta.name) + ')') + '</div>' +
       '<div class="bowlers">' + (inn.bowlers || []).map((b, i) =>
         '<div class="bowl-row">' +
           '<div class="b-name">' + esc(b.member ? displayNameOf(inn.bowlingTeam, b.member) : b.name) + '</div>' +
@@ -1657,7 +1763,8 @@ function inningCardHTML(m, inn, inningIdx, canEdit) {
             '<label>Runs<input type="number" min="0" inputmode="numeric" value="' + (b.runs || 0) + '" data-bowl data-match="' + m.id + '" data-inning="' + inningIdx + '" data-idx="' + i + '" data-field="runs"' + (canEdit ? '' : ' disabled') + ' /></label>' +
             '<label>Wkts<input type="number" min="0" inputmode="numeric" value="' + (b.wickets || 0) + '" data-bowl data-match="' + m.id + '" data-inning="' + inningIdx + '" data-idx="' + i + '" data-field="wickets"' + (canEdit ? '' : ' disabled') + ' /></label>' +
           '</div>' +
-        '</div>').join('') + '</div>';
+        '</div>').join('') + '</div>'
+    ) : '';
 
     body =
       '<div class="scoreline mt"><span class="score-big" id="totals-' + tid + '">' + (inn.runs || 0) + '</span>' +
@@ -1665,17 +1772,20 @@ function inningCardHTML(m, inn, inningIdx, canEdit) {
       '<div class="batting-line" id="batting-' + tid + '">Batting: <strong>' + esc(strikerName) + '</strong></div>' +
       '<div class="over-dots" id="dots-' + tid + '">' + overDots(totalBalls(inn)) + '</div>' +
       runpad +
-      '<div class="batters" id="batters-' + tid + '">' + rows + '</div>' +
+      '<div class="batters" id="batters-' + tid + '">' + (rows || '<div class="empty" style="padding:14px;border:1px dashed rgba(255,255,255,0.1);border-radius:12px;margin:8px 0">No players yet. Click "＋ Add Batter" below to add players!</div>') + '</div>' +
       bowling +
       (canEdit ? '<button type="button" class="btn btn-sm btn-ghost mt" data-action="add-bowler" data-match="' + m.id + '" data-inning="' + inningIdx + '">＋ Add Bowler</button>' : '') +
       (canEdit ? '<button type="button" class="btn btn-sm btn-ghost mt" data-action="add-player" data-match="' + m.id + '" data-inning="' + inningIdx + '">＋ Add Batter</button>' : '');
   }
 
+  const cardTitle = m.isIndividual ? 'Individual Players' : (esc(meta.name) + ' (Innings ' + inn.inningNum + ')');
+  const cardBadge = m.isIndividual ? 'Live Score' : 'Batting';
+
   return '' +
     '<div class="glass card team-card" style="border-top-color:' + color + '">' +
       '<div class="t-head">' +
-        '<span class="t-name">' + esc(meta.name) + ' (Innings ' + inn.inningNum + ')' + '</span>' +
-        '<span class="badge badge-live">Batting</span>' +
+        '<span class="t-name">' + cardTitle + '</span>' +
+        '<span class="badge badge-live">' + cardBadge + '</span>' +
       '</div>' +
       body +
     '</div>';
@@ -1753,7 +1863,7 @@ function applyBall(matchId, inningIdx, runs) {
 
   markLocalEdit();
   renderLiveArea();
-  db.saveMatch(m);
+  try { db.saveMatch(m); } catch (e) { console.error('Firestore save failed:', e); }
 }
 
 function applyWicket(matchId, inningIdx) {
@@ -1779,7 +1889,7 @@ function applyWicket(matchId, inningIdx) {
 
   markLocalEdit();
   renderLiveArea();
-  db.saveMatch(m);
+  try { db.saveMatch(m); } catch (e) { console.error('Firestore save failed:', e); }
 }
 
 function setStriker(matchId, inningIdx, idx) {
@@ -1845,8 +1955,8 @@ async function addPlayerToInning(matchId, inningIdx) {
 
   m.updatedAt = Date.now();
   syncMatchTotals(m);
-  await db.saveMatch(m);
   renderLiveArea();
+  try { await db.saveMatch(m); } catch (e) { console.error('Save error:', e); }
 }
 
 async function addBowlerToInning(matchId, inningIdx) {
@@ -1869,8 +1979,8 @@ async function addBowlerToInning(matchId, inningIdx) {
 
   m.updatedAt = Date.now();
   syncMatchTotals(m);
-  await db.saveMatch(m);
   renderLiveArea();
+  try { await db.saveMatch(m); } catch (e) { console.error('Save error:', e); }
 }
 
 async function removePlayerFromInning(matchId, inningIdx, idx) {
@@ -1883,8 +1993,8 @@ async function removePlayerFromInning(matchId, inningIdx, idx) {
   recomputeInning(inn);
   syncMatchTotals(m);
   m.updatedAt = Date.now();
-  await db.saveMatch(m);
   renderLiveArea();
+  try { await db.saveMatch(m); } catch (e) { console.error('Save error:', e); }
 }
 
 async function removeBowlerFromInning(matchId, inningIdx, idx) {
@@ -1896,8 +2006,8 @@ async function removeBowlerFromInning(matchId, inningIdx, idx) {
   inn.bowlers.splice(idx, 1);
   m.updatedAt = Date.now();
   syncMatchTotals(m);
-  await db.saveMatch(m);
   renderLiveArea();
+  try { await db.saveMatch(m); } catch (e) { console.error('Save error:', e); }
 }
 
 /* ---------- 17. Input Field Handlers (Score, Bowler, Out, Rename) ---------- */
@@ -2993,6 +3103,23 @@ function globalChange(e) {
 }
 
 /* ---------- 23. Application Lifecycle Bootstrapper ---------- */
+function startSubscriptions() {
+  if (db && typeof db.unsubscribeAll === 'function') {
+    db.unsubscribeAll();
+  }
+  db.subscribe('teams', applyTeams);
+  db.subscribe('customTeams', applyCustomTeams);
+  db.subscribe('matches', applyMatches);
+  db.subscribe('votes', applyVotes);
+  db.subscribe('players', applyPlayers);
+}
+
+window.addEventListener('beforeunload', () => {
+  if (db && typeof db.unsubscribeAll === 'function') {
+    db.unsubscribeAll();
+  }
+});
+
 async function init() {
   updateClock();
   setInterval(updateClock, 1000);
@@ -3017,11 +3144,18 @@ async function init() {
   renderSyncStatus();
 
   // Subscribe to all 5 Firestore / Local collections
-  db.subscribe('teams', applyTeams);
-  db.subscribe('customTeams', applyCustomTeams);
-  db.subscribe('matches', applyMatches);
-  db.subscribe('votes', applyVotes);
-  db.subscribe('players', applyPlayers);
+  startSubscriptions();
+
+  // Keep UI in sync with Firebase auth state (e.g. session expiry / revocation)
+  if (mode === 'firestore' && typeof firebase !== 'undefined' && firebase.auth) {
+    firebase.auth().onAuthStateChanged(authUser => {
+      renderSyncStatus();
+      if (!authUser) {
+        state.user = null;
+        showSection('login-section');
+      }
+    });
+  }
 
   // Login & Registration Event Listeners
   const loginForm = document.getElementById('login-form');
